@@ -151,3 +151,34 @@ Not verified:
 - [x] `rejoin` message: first arrival gets `created` (no token echoed), second gets `joined` and the first `peer-joined`, with relay credentials as for `join` (shared `announcePaired`). Ids must be 26 base32 characters, else `invalid-token`.
 - [x] Tests: both arrival orders, third peer `room-full`, 10 bad ids including `../`, invite token unreachable and vice versa, already-in-room, unpaired room expires via Sweep, server busy at the cap, 50 concurrent arrivals give exactly one creator and one joiner, WebSocket flow including offer relay. `go test -race -count=5` passes.
 - Not changed yet: nothing in the browser uses `rejoin` (steps 2-3), so production behaviour is unchanged until the client lands.
+
+# plan_2.md: Direct resume and Stored mode (built, tested locally, NOT deployed)
+
+## Direct mode with resume (steps 1-3)
+- [x] Server `rejoin` (commit fff39be).
+- [x] `transfer.ts`: `start` offsets on sender and receiver, `receiver.flush()`, `newTransferId`, `fingerprint`, `parseMeta` with `id`/`fp`, `parseResume`, `parseResumeAt`.
+- [x] `sinks.ts`: closed 64 MiB OPFS parts (`opfsPartsSink`, `openParts`, `partsOffset`, `discardParts`), sorted by number; `cleanOpfs` removes `resume-*` folders by newest part; `chooseSink` tries parts first (needs OPFS with `createWritable`, file fits twice in the quota), then the picker, then single-file OPFS, then memory.
+- [x] `peer.ts`: events from a closed peer are ignored.
+- [x] `main.ts`: `paused` state, one pause per drop, automatic `rejoin` with retries, `resume` / `resume-at` handshake, record in localStorage (validated on read), "Unfinished transfer" prompt with Resume/Discard, `beforeunload` guard for paused, Cancel while paused leaves the room.
+- Bugs the tests found and fixed: a send on a dead channel was treated as a failed transfer (now a pause), and an in-flight send throwing right after a pause aborted it (now ignored while paused).
+- Behaviour change: on desktop Chrome, files now go to Downloads via OPFS parts with no "Save as" dialog (so a tab close can be survived). The picker is still the fallback when the file doesn't fit the quota.
+
+## Stored mode (steps 6-7, off unless `STORE_GB` and `STORE_KEY` are set)
+- [x] `server/store.go`: create/put/finish/delete/meta/get chunk; passcode and write token compared in constant time; ids and chunk numbers validated before any path is built; 8 MiB chunk cap; reservation checked at upload; total cap; free-disk floor rechecked per chunk; unfinished uploads expire after 1 h, finished after 24 h; download cap of 3x size; state rebuilt from disk at start; per-request deadlines; nothing logged.
+- [x] `budget.go`/`main.go`: the budget now runs for the relay or Stored mode, with `Budget.Add` and a shared `save()`. Uploads and downloads both count.
+- [x] `store.ts`/`stored.ts`/`index.html`: AES-256-GCM per chunk in the browser, key only in the `#s/<id>.<key>` fragment, IV from the position, chunk index and total authenticated, retries resend the same encrypted buffer, name encrypted, download decrypts into the existing sinks, delete button, QR for the link, wrong key / tampering / expiry messages.
+- [x] `deploy/nginx-streamdrop.conf`: `/store` with a 9 MiB body limit and no buffering; `vite.config.ts` proxies `/store`; `install-turn.sh` now appends to `/etc/streamdrop/env` instead of overwriting it.
+- Stored settings (`/etc/streamdrop/env`): `STORE_GB`, `STORE_KEY`, optional `STORE_FLOOR_GB` (default 3), `RELAY_BUDGET_GB` (default 600).
+
+## Tests (all passing)
+- Go `-race -count=3`: hub rejoin (both orders, third peer, bad ids, separation from invite tokens, concurrency), Stored mode (wrong passcode/token, bad ids and chunk numbers incl. `../`, oversized chunks, total cap, disk floor, unfinished invisible, expiry, restart, download limit, budget stops reads and writes, concurrent uploads), `Budget.Add` restart and monthly rollover.
+- Unit (27): resume offsets, fingerprint, id and message validation, part sort order with 120 parts, encrypt/decrypt round trip, tampered / swapped / reordered / truncated chunks fail, wrong key fails, name hidden and validated, link parsing.
+- e2e (16, Chromium): direct transfer; resume after a dropped channel, receiver reload at 50%, sender reload at 50%, wrong file refused, server restart while paused, cancel while paused (partial file and record removed); Stored round trips (non-multiple of 8 MiB, zero bytes, exactly one chunk) with the sender closed, no plaintext or file name on disk, wrong passcode, delete, tampered chunk detected and nothing saved, wrong key.
+- 2 GiB on OPFS parts: sha256 matches, 47 MiB/s in 44 s (baseline 36 MiB/s); 1 second of 41 below 5 MiB/s.
+
+## Not done / not verified
+- Nothing deployed: run `deploy/deploy.sh` for resume to go live. Stored mode also needs the env settings, a redeploy for the nginx rule, and a decision on Cloudflare's terms for large files.
+- A real network cut (simulated with a closed data channel), a real browser crash, the real save picker, Firefox, Safari (the `createWritable` check should send Safari to the next option, untested), phones.
+- Stored mode through the real tunnel (500 MiB), `df` after expiry on the VPS, and other sites' status after enabling it.
+- Running Stored uploads are counted as bytes arrive, but a single finished-file budget overshoot is bounded only by chunks in flight.
+- Whole-file hashing is not used: a middle-of-file edit that keeps size and timestamp would not be noticed on resume.

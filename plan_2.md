@@ -1,6 +1,6 @@
 # StreamDrop: Two Transfer Modes (Direct and Stored)
 
-Status: plan only, nothing is built. Written 2026-11-06 from `graphify-out/GRAPH_REPORT.md` and the source.
+Status: built and tested locally on 2026-11-06 (see `track.md`); not deployed. Written from `graphify-out/GRAPH_REPORT.md` and the source.
 
 | | **Direct** (exists, gains resume) | **Stored** (new) |
 |---|---|---|

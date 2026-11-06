@@ -14,7 +14,17 @@ type Events = {
   low(): void;
 };
 
-export function createPeer(initiator: boolean, relayServers: RTCIceServer[], on: Events) {
+export function createPeer(initiator: boolean, relayServers: RTCIceServer[], handlers: Events) {
+  // After close(), late events from this connection (a drop can report disconnected, failed and closed) are ignored.
+  let dead = false;
+  const on: Events = {
+    signal: (s) => { if (!dead) handlers.signal(s); },
+    state: (t) => { if (!dead) handlers.state(t); },
+    open: () => { if (!dead) handlers.open(); },
+    closed: () => { if (!dead) handlers.closed(); },
+    message: (d) => { if (!dead) handlers.message(d); },
+    low: () => { if (!dead) handlers.low(); },
+  };
   // STUN lets each browser learn its public address so peers on different networks can connect.
   // It only sees the address, never the file. relayServers (TURN) come from the server once two
   // peers are paired; they carry the file only when no direct path works.
@@ -75,6 +85,9 @@ export function createPeer(initiator: boolean, relayServers: RTCIceServer[], on:
     },
     channel: () => channel!,
     maxMessageSize: () => pc.sctp?.maxMessageSize,
-    close: () => pc.close(),
+    close() {
+      dead = true;
+      pc.close();
+    },
   };
 }

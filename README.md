@@ -1,7 +1,9 @@
 # StreamDrop
 
 Send a file directly from one browser to another. A small Go server only introduces the two browsers
-(WebSocket signaling); the file travels over a WebRTC DataChannel and is never stored on the server.
+(WebSocket signaling); the file travels over a WebRTC DataChannel and, in this default mode, is never
+stored on the server. An optional second mode, **Stored**, keeps an encrypted copy on the server for
+24 hours so the sender can leave (see "Stored mode" below). It is off unless you switch it on.
 
 Live: https://streamdrop.kurohane.xyz
 
@@ -13,24 +15,46 @@ Live: https://streamdrop.kurohane.xyz
 
 The token works for joining for 10 minutes and for one receiver. Each room holds exactly two people.
 
+If the connection drops mid-transfer, both pages keep what they have and reconnect on their own, and the
+transfer continues from where the receiver stopped (see "Interruptions" below).
+
 ## Limits
 
-- Both people must keep the page open until the transfer ends. Nothing is stored for later.
+- In direct mode both people must keep the page open until the transfer ends. For a sender who needs to
+  leave, use Stored mode.
 - Connections try a direct path first, using a public STUN server (`stun.cloudflare.com`, set in
   `web/src/peer.ts`; it sees each browser's public IP, never the file). If no direct path works, an
   optional TURN relay on the VPS carries the file (see "Relay" below). Without the relay, browsers behind
   strict NATs (some mobile carriers, corporate Wi-Fi) can fail with "Couldn't connect the two devices".
-- Where the received file goes depends on the browser:
-  | Browser support | Method | Size limit |
-  |---|---|---|
-  | `showSaveFilePicker` (Chrome, Edge on desktop) | written straight to the chosen file | disk space; 20 GiB cap |
-  | Origin Private File System | temp storage, then a download | about half the browser's storage quota |
-  | neither | held in memory | 512 MiB |
-- A dropped connection means starting the file again. There is no resume.
+- Where the received file goes depends on the browser. The first row that applies is used:
+  | Browser support | Method | Size limit | Survives a tab close |
+  |---|---|---|---|
+  | Origin Private File System, file fits twice in the quota | 64 MiB parts, then a download | half the browser's storage quota | yes, except the open part |
+  | `showSaveFilePicker` (Chrome, Edge on desktop) | written straight to the chosen file | disk space; 20 GiB cap | no |
+  | neither | held in memory | 512 MiB | no |
+
+  On desktop Chrome the first row usually applies, so files go to Downloads without a "Save as" dialog.
 - Mobile browsers may suspend background tabs and stop a transfer.
 
-Tested: Chromium on Linux (Playwright, plus a 2 GiB transfer to disk). Not tested: Firefox, Safari,
-Edge, Windows, macOS, Android, iOS.
+### Interruptions
+
+| What happens | Result |
+|---|---|
+| Connection drops, both tabs stay open | Resumes by itself, nothing lost |
+| Server restarts or is deployed | Resumes by itself once it is back |
+| Receiver reloads or closes the tab (parts sink) | After a reload, click **Resume**; loses at most the open 64 MiB part |
+| Sender reloads or closes the tab | After a reload, choose the same file; the receiver loses nothing |
+| Different file chosen on resume | Refused ("This isn't the same file"); a fingerprint of the size, date and first and last MiB is compared |
+| Receiver used the save picker or memory | Survives a drop with both tabs open, but not a reload |
+| The other person never comes back | **Cancel** discards the partial file; unfinished partial files are removed after 24 hours |
+
+If the connection drops after the receiver has everything but before "Complete" reaches the sender, the
+sender keeps showing "Reconnecting…" until it presses Cancel. The file did arrive.
+- Mobile browsers may suspend background tabs and stop a transfer.
+
+Tested: Chromium on Linux (Playwright; a 2 GiB transfer on the parts sink at 47 MiB/s; every row of the
+interruptions table except a real network cut, which is simulated by closing the data channel). Not
+tested: Firefox, Safari, Edge, Windows, macOS, Android, iOS, the real save picker.
 
 ## Local development
 
@@ -46,7 +70,7 @@ Checks:
 ```bash
 cd server && go vet ./... && go test -race ./...
 cd web && npm run build && npm test      # type-check + unit tests
-cd web && npm run test:e2e               # two browser pages transfer a file (starts both servers)
+cd web && npm run test:e2e               # direct, resume and Stored tests (starts Vite and its own Go servers; port 8080 must be free)
 CROSS_BROWSER=1 npm run test:e2e         # also Firefox/WebKit pairs (needs a working Playwright Firefox/WebKit)
 ```
 
@@ -110,6 +134,34 @@ other sites; check it monthly.
 Test the relay by opening the site with `?relay=1` on both sides (this forbids direct paths), and check
 `sudo cat /var/lib/streamdrop/relay-usage.json` grows afterwards. Do not leave `?relay=1` in shared links.
 
+## Stored mode, optional
+
+Off by default. When on, the start page gets an **Upload for later** form. The file is encrypted in the
+sender's browser (AES-256-GCM, 8 MiB chunks, one fresh key per file), uploaded in chunks, and kept on the
+VPS for 24 hours. The link `https://host/#s/<id>.<key>` carries the key after `#`, so the server holds
+only ciphertext and an encrypted name. The server can't scan or inspect files, and a downloader's browser
+decrypts each chunk into the same storage it uses for direct transfers.
+
+| Setting (in `/etc/streamdrop/env`) | Meaning |
+|---|---|
+| `STORE_GB` | Turns Stored mode on; total space for stored files (5 suggested) |
+| `STORE_KEY` | Passcode needed to upload; share it only with people you trust |
+| `STORE_FLOOR_GB` | Free disk to always leave for your other sites (default 3) |
+| `RELAY_BUDGET_GB` | Monthly byte budget shared with the relay (default 600) |
+
+Limits: 2 GiB per file, 24 hours (1 hour for an unfinished upload), about 3 downloads per file, and the
+budget above. Each stored byte is counted once when uploaded and once per download, so a file downloaded
+once costs twice its size.
+
+To switch it on, add `STORE_GB=5` and `STORE_KEY=<something long, e.g. from openssl rand -hex 16>` to
+`/etc/streamdrop/env`, run `sudo systemctl restart streamdrop`, and redeploy once so nginx gets the
+`/store` rule. **Before enabling it, check Cloudflare's terms:** serving large files through a Tunnel on
+a free plan may break them, and this project could not find an official answer.
+
+Files live in `/var/lib/streamdrop/files/<id>/`. To remove a reported file immediately:
+`sudo rm -rf /var/lib/streamdrop/files/<id>`; the id is the part of the link after `#s/` and before the `.`.
+Because files are encrypted you cannot see what they contain; the passcode is the control on who uploads.
+
 ## Operating it
 
 ```bash
@@ -125,14 +177,15 @@ Limits in the server (`server/signal.go`, `server/hub.go`): 10 connections per I
 `X-Forwarded-For`, which nginx sets from Cloudflare's `CF-Connecting-IP`. The Go server must therefore
 stay bound to `127.0.0.1`.
 
-Nothing needs backing up: the app has no database or stored files.
+Nothing needs backing up: the app has no database, and stored files are temporary by design.
 
 ## Layout
 
 ```
-server/            Go signaling server (hub.go rooms, signal.go handler and limits, loadtest/)
-web/src/           main.ts page logic, peer.ts WebRTC, transfer.ts chunking and flow control, sinks.ts storage
-web/e2e/           Playwright test
+server/            Go server (hub.go rooms and rejoin, signal.go handler and limits, store.go Stored mode, budget.go, loadtest/)
+web/src/           main.ts page logic, peer.ts WebRTC, qr.ts QR code, transfer.ts chunking, flow control and resume,
+                   sinks.ts storage, store.ts and stored.ts Stored mode
+web/e2e/           Playwright tests: direct, resume (reloads, drops, server restart), Stored
 deploy/            nginx config, systemd unit, deploy and install scripts, optional coturn setup (install-turn.sh)
 plan.md, project-plan.md, track.md   plans and progress
 ```

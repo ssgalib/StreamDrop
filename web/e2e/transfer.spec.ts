@@ -1,5 +1,9 @@
 import { test, expect, chromium, firefox, webkit } from "@playwright/test";
 import { createHash, randomBytes } from "node:crypto";
+import { startServer, stopServer } from "./server";
+
+test.beforeAll(() => startServer());
+test.afterAll(stopServer);
 
 const engines = { chromium, firefox, webkit };
 // Firefox hides local addresses behind mDNS names; with no STUN/TURN server the peers can't find each other.

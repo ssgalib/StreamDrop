@@ -12,11 +12,12 @@ apt-get install -y coturn
 install -d -m 0750 -o turnserver -g turnserver /var/log/turnserver
 install -d -m 0755 /etc/streamdrop
 
-# Keep the secret if one exists, so credentials issued before a re-run stay valid.
-if ! grep -q '^TURN_SECRET=' /etc/streamdrop/env 2>/dev/null; then
-  printf 'TURN_SECRET=%s\nTURN_HOST=%s\nRELAY_BUDGET_GB=600\n' "$(openssl rand -hex 32)" "$ip" > /etc/streamdrop/env
-  chmod 600 /etc/streamdrop/env
-fi
+# Append, never overwrite: the file may already hold Stored-mode settings (STORE_GB, STORE_KEY).
+# Keep an existing secret, so credentials issued before a re-run stay valid.
+touch /etc/streamdrop/env
+chmod 600 /etc/streamdrop/env
+grep -q '^TURN_SECRET=' /etc/streamdrop/env || printf 'TURN_SECRET=%s\nTURN_HOST=%s\n' "$(openssl rand -hex 32)" "$ip" >> /etc/streamdrop/env
+grep -q '^RELAY_BUDGET_GB=' /etc/streamdrop/env || echo 'RELAY_BUDGET_GB=600' >> /etc/streamdrop/env
 secret=$(sed -n 's/^TURN_SECRET=//p' /etc/streamdrop/env)
 
 sed "s|@SECRET@|$secret|; s|@IP@|$ip|g" turnserver.conf.in > /etc/turnserver.conf

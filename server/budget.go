@@ -98,6 +98,20 @@ func (b *Budget) scan(logPath string) {
 	b.roll()
 	b.st.Used += added
 	b.st.Offset = off
+	b.save()
+}
+
+// Add counts bytes that Stored mode moved, in either direction.
+func (b *Budget) Add(n int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.roll()
+	b.st.Used += n
+	b.save()
+}
+
+// save writes the state file. Caller holds b.mu.
+func (b *Budget) save() {
 	if data, err := json.Marshal(b.st); err == nil {
 		os.WriteFile(b.path+".tmp", data, 0o600)
 		os.Rename(b.path+".tmp", b.path)

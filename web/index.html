@@ -9,6 +9,15 @@
     <main>
       <h1>StreamDrop</h1>
 
+      <section id="unfinished" hidden>
+        <p>Unfinished transfer: <strong id="unfinished-name"></strong> <span id="unfinished-pct"></span></p>
+        <div id="unfinished-sender" hidden>
+          <label>Choose the same file to continue <input type="file" id="resume-file"></label>
+        </div>
+        <button id="resume" type="button">Resume</button>
+        <button id="discard" type="button">Discard</button>
+      </section>
+
       <section id="start">
         <button id="create" type="button">Create Room</button>
         <form id="join-form">
@@ -41,6 +50,29 @@
           <progress id="progress" aria-label="Transfer progress" value="0" max="1"></progress> <span id="pct">0%</span>
           <button id="cancel" type="button">Cancel</button>
         </div>
+      </section>
+
+      <section id="stored" hidden>
+        <h2>Upload for later</h2>
+        <p>The file is encrypted in your browser and kept on the server for 24 hours, so you can close this page.
+          Only people with the link can open it.</p>
+        <label>Passcode <input id="store-key" type="password" autocomplete="off"></label>
+        <label>File <input type="file" id="store-file"></label>
+        <button id="store-upload" type="button">Upload</button>
+        <p><progress id="store-progress" aria-label="Upload progress" value="0" max="1" hidden></progress> <span id="store-pct" hidden></span></p>
+        <div id="store-result" hidden>
+          <label>Download link <input id="store-link" readonly></label>
+          <button id="store-copy" type="button">Copy</button>
+          <button id="store-delete" type="button">Delete now</button>
+          <p>Available until <span id="store-expiry"></span></p>
+          <svg id="store-qr" role="img" aria-label="QR code for the download link"></svg>
+        </div>
+      </section>
+
+      <section id="download" hidden>
+        <p>File: <strong id="dl-name"></strong> (<span id="dl-size"></span>), available until <span id="dl-expiry"></span></p>
+        <button id="dl-button" type="button" hidden>Download</button>
+        <p><progress id="dl-progress" aria-label="Download progress" value="0" max="1" hidden></progress> <span id="dl-pct" hidden></span></p>
       </section>
 
       <p id="status" role="status">Not connected</p>

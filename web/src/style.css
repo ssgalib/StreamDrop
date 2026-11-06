@@ -11,3 +11,4 @@ code { overflow-wrap: anywhere; }
 @media (prefers-color-scheme: dark) { #error { color: #ff8a80; } }
 :focus-visible { outline: 3px solid #1a73e8; outline-offset: 2px; }
 #qr svg { display: block; width: min(100%, 14rem); height: auto; }
+#store-qr { display: block; width: min(100%, 14rem); height: auto; }

@@ -2,6 +2,8 @@
 
 ## 1. Goal and current state
 
+> **Update (plan_2.md):** resume, Stored mode (server-side storage) and browser-side encryption are no longer left out: they were built as described in `plan_2.md`. See `README.md` for how they work.
+
 StreamDrop sends files directly from one browser to another, up to 20 GiB on browsers that can write to disk as data arrives. A small self-hosted server introduces the two browsers. File contents are never saved on the VPS.
 
 **Stack:** Go + WebSocket signaling, TypeScript + Vite, WebRTC DataChannels, coturn, Caddy, Docker Compose.
