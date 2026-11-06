@@ -136,3 +136,6 @@ Not verified:
 - Existing tests all pass (Go `-race`, 9 unit, e2e).
 - [ ] NOT done: install coturn on the VPS (needs sudo), forced-relay transfer, wrong-credential refusal, private-address refusal, speed limit, behaviour when credentials expire mid-transfer, provider firewall ports. Nothing relay-related runs in production until `install-turn.sh` is run.
 - Overshoot: running sessions are only counted when they end; worst case is bounded by 10 sessions x 3 MB/s x 3 h, far above what real use will reach.
+
+# Cross-network result
+- [x] User reported a transfer between two devices on different networks works with STUN only (no relay). Decision: do not install coturn for now; `install-turn.sh` stays opt-in for later if real users report "Couldn't connect the two devices". (Which exact devices/networks were used was not recorded.)
