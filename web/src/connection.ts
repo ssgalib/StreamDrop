@@ -14,6 +14,8 @@ export type ConnectionEvents = {
   message(data: string | ArrayBuffer): void;
   low(): void; // the send buffer drained
   lost(): void; // an open connection dropped; the app decides: rejoin() or leave()
+  bye(): void; // the other device disconnected on purpose: don't wait for it
+  session(id: string): void; // the shared secret is known, so the pair can be saved and rejoined later
   error(text: string): void;
 };
 
@@ -95,18 +97,25 @@ export function createConnection(ev: ConnectionEvents) {
       if (!session && !reconnected && peer && isCreator) {
         session = newTransferId();
         send({ t: "session", id: session });
+        ev.session(session);
       }
       setPhase("open");
       ev.open(reconnected);
     },
     closed: () => peerLost(false),
     message(data: string | ArrayBuffer) {
-      if (typeof data === "string" && data.startsWith('{"t":"session"')) {
+      if (typeof data === "string" && data.startsWith('{"t":"')) {
         try {
           const m = JSON.parse(data);
-          if (!session && m.t === "session" && typeof m.id === "string" && SESSION_RE.test(m.id)) session = m.id;
-          return;
-        } catch { /* not ours: fall through */ }
+          if (m.t === "session") {
+            if (!session && typeof m.id === "string" && SESSION_RE.test(m.id)) {
+              session = m.id as string;
+              ev.session(m.id);
+            }
+            return;
+          }
+          if (m.t === "bye") return ev.bye();
+        } catch { /* not ours: pass it on */ }
       }
       ev.message(data);
     },
@@ -232,6 +241,7 @@ export function createConnection(ev: ConnectionEvents) {
     isOpen: () => opened && peer?.channel()?.readyState === "open",
     maxMessage: () => peer?.maxMessageSize(),
     get session() { return session; },
+    get phase() { return phase; },
   };
 }
 

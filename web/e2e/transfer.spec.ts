@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, stopServer } from "./server";
-import { connected, forceMemorySink, pair, read, row, sha, URL } from "./helpers";
+import { connected, dropChannel, forceMemorySink, pair, peerStates, read, row, sha, URL, watchPeerState } from "./helpers";
 
 test.beforeAll(() => startServer());
 test.afterAll(stopServer);
@@ -199,5 +199,73 @@ test("a made-up code shows a readable error and the form still works", async () 
     await page.close();
   } finally {
     await close();
+  }
+});
+
+// A phone freezes the tab (and drops its connections) while you pick a file in the Files app. Nothing is
+// moving at that moment, so the connection must come back by itself instead of giving up.
+test("an idle connection that drops reconnects by itself, and sending still works after", async () => {
+  const { a, b, close } = await pair({ memory: true, withSpy: true });
+  try {
+    await watchPeerState(a);
+    await watchPeerState(b);
+    await dropChannel(a); // nothing is being sent
+    for (const p of [a, b]) {
+      await expect.poll(async () => (await peerStates(p)).includes("Reconnecting…"), { timeout: 15_000 }).toBe(true);
+      await connected(p);
+      await expect(p.locator("#ended")).toBeHidden();
+    }
+    const data = randomBytes(2_000_000);
+    const dl = b.waitForEvent("download");
+    await a.setInputFiles("#files", upload("after-reconnect.bin", data));
+    await row(b, "after-reconnect.bin").locator(".accept").click();
+    expect(sha(await read(await dl))).toBe(sha(data));
+  } finally {
+    await close();
+  }
+});
+
+test("a tab that is killed and reopened while idle rejoins by itself", async () => {
+  const { a, b, close } = await pair({ memory: true });
+  try {
+    await a.reload(); // what a phone does to a tab you left for the Files app
+    await connected(a);
+    await connected(b);
+    await expect(a.locator("#home")).toBeHidden();
+    const data = randomBytes(1_500_000);
+    const dl = a.waitForEvent("download");
+    await b.setInputFiles("#files", upload("back-to-a.bin", data));
+    await row(a, "back-to-a.bin").locator(".accept").click();
+    expect(sha(await read(await dl))).toBe(sha(data));
+  } finally {
+    await close();
+  }
+});
+
+test("Disconnect is understood at once: the other device doesn't wait to see if you come back", async () => {
+  const { a, b, close } = await pair({ memory: true });
+  try {
+    await a.click("#leave");
+    await expect(b.locator("#ended")).toBeVisible({ timeout: 3000 });
+    await expect(b.locator("#ended-text")).toHaveText("The other device disconnected.");
+    await b.reload(); // and it does not try to rejoin after a reload either
+    await expect(b.locator("#home")).toBeVisible();
+    await expect(b.locator("#session")).toBeHidden();
+  } finally {
+    await close();
+  }
+});
+
+test("if the other device never comes back, waiting stops after a few minutes", async () => {
+  const { a, b, ctxA, close } = await pair({ memory: true });
+  try {
+    await b.context().clock.install();
+    await ctxA.close(); // the other device is just gone, with no goodbye
+    await expect(b.locator("#peer-state")).toHaveText("Reconnecting…", { timeout: 15_000 });
+    await b.clock.fastForward("06:00");
+    await expect(b.locator("#ended")).toBeVisible({ timeout: 10_000 });
+    await expect(b.locator("#ended-text")).toHaveText("The other device didn't come back.");
+  } finally {
+    await close().catch(() => {});
   }
 });

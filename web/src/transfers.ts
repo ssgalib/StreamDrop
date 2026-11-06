@@ -137,6 +137,7 @@ export function createTransfers(env: Env) {
   }
 
   const engine = {
+    persist,
     items: () => [...items.values()] as Item[],
     hasUnfinished: () => [...items.values()].some(unfinished),
     activeCount: () => [...items.values()].filter((i) => i.state === "active").length,

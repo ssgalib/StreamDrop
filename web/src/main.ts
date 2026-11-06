@@ -36,14 +36,24 @@ function view(v: View) {
 // ---------------------------------------------------------------- connection and transfers
 
 const RECORD_KEY = "streamdrop-session";
-type Record = { session: string; items: Saved[] };
+type Record = { session: string; items: Saved[]; at: number };
 
-// What a reload needs to carry on. Reads are wrapped and validated: storage can be blocked or edited.
+// How long a pair is remembered for an automatic rejoin when the page was killed or reloaded, and how long
+// a device waits for the other to come back before giving up (when no file is in progress).
+const RECONNECT_WINDOW = 10 * 60_000;
+const GRACE = 5 * 60_000;
+
+// What a reload needs to carry on: the shared secret, and the files that were moving. Written even when
+// nothing is moving, so a phone that kills the tab while you pick files can reconnect by itself.
+// Reads are wrapped and validated: storage can be blocked or edited.
 function saveRecords(items: Saved[]) {
   try {
-    if (items.length && conn.session) localStorage.setItem(RECORD_KEY, JSON.stringify({ session: conn.session, items }));
-    else localStorage.removeItem(RECORD_KEY);
-  } catch { /* storage blocked: files just can't resume after a reload */ }
+    if (conn.session) localStorage.setItem(RECORD_KEY, JSON.stringify({ session: conn.session, items, at: Date.now() }));
+  } catch { /* storage blocked: the pair just can't be rejoined after a reload */ }
+}
+
+function clearRecord() {
+  try { localStorage.removeItem(RECORD_KEY); } catch { /* ignore */ }
 }
 
 function loadRecords(): Record | null {
@@ -55,10 +65,21 @@ function loadRecords(): Record | null {
       const m = parseMeta(r);
       if (m && (r.dir === "send" || r.dir === "receive")) items.push({ id: m.id, dir: r.dir, name: m.name, size: m.size, type: m.type, fp: m.fp });
     }
-    return items.length ? { session: raw.session, items } : null;
+    return { session: raw.session, items, at: Number.isFinite(raw.at) ? raw.at : 0 };
   } catch {
     return null;
   }
+}
+
+let giveUp: ReturnType<typeof setTimeout> | undefined;
+// Nothing is in progress and the other device is gone: wait a while (phones freeze tabs when you pick a file),
+// then stop. With files in progress we keep waiting, since they can carry on.
+function armGiveUp() {
+  clearTimeout(giveUp);
+  if (transfers.hasUnfinished()) return;
+  giveUp = setTimeout(() => {
+    if (!conn.isOpen()) ended("The other device didn't come back.");
+  }, GRACE);
 }
 
 const conn = createConnection({
@@ -86,6 +107,7 @@ const conn = createConnection({
     setStatus("Link expired");
   },
   open(reconnected) {
+    clearTimeout(giveUp);
     endedEl.hidden = true;
     dropzone.hidden = false;
     leaveBtn.hidden = false;
@@ -96,9 +118,11 @@ const conn = createConnection({
   low: () => transfers.onLow(),
   async lost() {
     await transfers.onLost(); // files that were moving pause with exact offsets
-    if (transfers.hasUnfinished()) conn.rejoin(); // something is still in progress: get back together
-    else ended("The other device disconnected.");
+    conn.rejoin(); // always try to get back together: a phone freezes its tab while you pick a file
+    armGiveUp();
   },
+  bye: () => ended("The other device disconnected."), // it left on purpose: no reason to wait
+  session: () => transfers.persist(), // the pair can now be saved and rejoined
   error(text) {
     showError(text);
     // a failed pairing or join goes back to the start; an open session stays as it is
@@ -126,7 +150,10 @@ function setSessionState(s: "open" | "paused" | "ended") {
 
 // The connection is over and nothing is left to finish. History stays visible.
 function ended(text: string) {
+  clearTimeout(giveUp);
+  transfers.cancelAll();
   conn.leave();
+  clearRecord();
   setSessionState("ended");
   setStatus("Disconnected");
   $("#ended-text").textContent = text;
@@ -136,9 +163,13 @@ function ended(text: string) {
   scheduleRender();
 }
 
-function goHome() {
+async function goHome() {
+  clearTimeout(giveUp);
   transfers.cancelAll();
+  try { conn.send({ t: "bye" }); } catch { /* not connected */ } // so the other device doesn't wait for us
+  await new Promise((r) => setTimeout(r, 150)); // let it leave before the connection closes
   conn.leave();
+  clearRecord();
   transfers.clearFinished();
   endedEl.hidden = true;
   dropzone.hidden = false;
@@ -276,7 +307,8 @@ addEventListener("beforeunload", (e) => {
 // ---------------------------------------------------------------- sending files
 
 function offerFiles(files: File[]) {
-  if (!files.length || !conn.isOpen()) return;
+  if (!files.length) return;
+  if (!conn.isOpen()) return showError("Not connected right now. Wait for it to reconnect, then try again.");
   showError("");
   void transfers.offer(files);
 }
@@ -358,7 +390,7 @@ let rejoined = false;
 
 async function showUnfinished() {
   const rec = loadRecords();
-  if (!rec) return;
+  if (!rec || !rec.items.length) return;
   resumeSession = rec.session;
   pendingSends = rec.items.filter((i) => i.dir === "send");
   const receives = rec.items.filter((i) => i.dir === "receive");
@@ -395,7 +427,7 @@ resumeBtn.addEventListener("click", async () => {
       transfers.restore(it, { sink: opened.sink, offset: opened.offset });
     }
   } catch {
-    saveRecords([]);
+    clearRecord();
     unfinishedEl.hidden = true;
     return showError("This browser can't continue that transfer. Ask the other device to send the file again.");
   }
@@ -427,7 +459,7 @@ resumeFiles.addEventListener("change", async () => {
 
 $("#discard").addEventListener("click", async () => {
   const rec = loadRecords();
-  saveRecords([]);
+  clearRecord();
   unfinishedEl.hidden = true;
   for (const it of rec?.items ?? []) if (it.dir === "receive") await discardParts(it.id);
 });
@@ -454,6 +486,25 @@ if (stored) {
   setStatus("Connecting");
   conn.join(linkToken);
 } else {
-  void showUnfinished();
-  void initStored();
+  const rec = loadRecords();
+  if (rec && !rec.items.length && Date.now() - rec.at < RECONNECT_WINDOW) {
+    // The tab was killed or reloaded (a phone does this while you pick a file) with nothing in flight: rejoin.
+    resumeSession = rec.session;
+    rejoined = true;
+    conn.rejoin(rec.session);
+    armGiveUp();
+  } else {
+    void showUnfinished();
+    void initStored();
+  }
 }
+
+// Coming back to the tab (e.g. from the Files app): don't wait for a retry timer that was frozen meanwhile.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && conn.session && conn.phase !== "idle" && !conn.isOpen()) conn.rejoin();
+});
+
+// Keep the saved pair fresh while connected, so it counts as recent if the tab is killed hours later.
+setInterval(() => {
+  if (conn.isOpen()) transfers.persist();
+}, 60_000);

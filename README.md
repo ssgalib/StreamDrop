@@ -49,6 +49,9 @@ transfer continues from where the receiver stopped (see "Interruptions" below).
 |---|---|
 | Connection drops, both tabs stay open | Resumes by itself, nothing lost |
 | Server restarts or is deployed | Resumes by itself once it is back |
+| Nothing is moving and the connection drops (a phone freezes the tab while you pick a file in the Files app) | Both devices reconnect by themselves and wait up to 5 minutes for each other |
+| The phone kills the tab and you reopen it within 10 minutes | The page rejoins the pair by itself (the shared secret is kept in the browser) |
+| One device presses **Disconnect** | The other is told at once and does not wait |
 | The device receiving reloads or closes the tab (parts sink) | After a reload, click **Resume receiving**; loses at most the open 64 MiB part |
 | The device sending reloads or closes the tab | After a reload, choose the same files again; nothing is lost on the receiving side |
 | A different file chosen on resume | Refused ("Not the same file: name"); a fingerprint of the size, date and first and last MiB is compared |

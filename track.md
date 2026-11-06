@@ -223,3 +223,12 @@ Chosen with the user: pair by link, QR or code (no same-network discovery, for p
 - Real phones, Firefox, Safari; a real network cut; the real save picker; a screen reader.
 - Older pages already open in a browser speak the old protocol and won't interoperate with the new one until reloaded.
 - Files that were only offered or waiting their turn are not kept across a reload, only ones that had started.
+
+# Phone fix: picking a file in the Files app no longer drops the connection for good (tested, NOT deployed)
+- Cause: on a phone the Files app takes over and the browser freezes the tab and drops its connections. When that happened with no file moving, the page gave up at once with "The other device disconnected".
+- Now: a dropped connection always tries to rejoin (both devices), and waits up to 5 minutes before giving up (when files are in progress it keeps waiting). Returning to the tab triggers an immediate retry.
+- If the phone kills the tab, the shared secret and a timestamp are kept in localStorage (refreshed every minute while connected), and a reopened page within 10 minutes rejoins by itself.
+- **Disconnect** sends a `bye` first, so the other device ends at once instead of waiting. Reloading after Disconnect does not rejoin.
+- Trying to send while reconnecting shows "Not connected right now. Wait for it to reconnect, then try again."
+- New e2e tests: idle drop reconnects and sending still works; killed and reopened tab rejoins; Disconnect understood at once and not rejoined after a reload; abandoned wait ends after 5 minutes (fake clock). 29 e2e, 45 unit and the Go tests pass.
+- Not verified on a real phone: the exact moment each Android browser freezes the tab and whether its connection survives a short file pick. The behaviour above does not depend on that, but confirm it by picking a file from the Files app on your phone.
