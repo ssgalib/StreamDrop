@@ -15,8 +15,10 @@ type Events = {
 };
 
 export function createPeer(initiator: boolean, on: Events) {
-  // No STUN or TURN servers are needed on localhost. coturn comes in a later milestone.
-  const pc = new RTCPeerConnection({ iceServers: [] });
+  // STUN lets each browser learn its public address so peers on different networks can connect.
+  // It only sees the address, never the file. shortcut: no TURN relay, so strict NATs can still fail;
+  // add coturn if real users report "Couldn't connect the two devices".
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }] });
   const pending: RTCIceCandidateInit[] = [];
   let channel: RTCDataChannel | undefined;
 

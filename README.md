@@ -16,9 +16,10 @@ The token works for joining for 10 minutes and for one receiver. Each room holds
 ## Limits
 
 - Both people must keep the page open until the transfer ends. Nothing is stored for later.
-- **No STUN or TURN server is configured**, so two browsers can only connect when they can reach each
-  other directly, for example on the same network. Across strict NATs or different networks a
-  connection can fail ("Couldn't connect the two devices"). Adding STUN/TURN is the next step.
+- Connections use a public STUN server (`stun.cloudflare.com`, set in `web/src/peer.ts`) so browsers on
+  different networks can find each other. It sees each browser's public IP address but never the file.
+  There is **no TURN relay**, so two browsers behind strict NATs (some mobile carriers, corporate
+  Wi-Fi) can still fail with "Couldn't connect the two devices". Adding coturn is the next step if that happens.
 - Where the received file goes depends on the browser:
   | Browser support | Method | Size limit |
   |---|---|---|

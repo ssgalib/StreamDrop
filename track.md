@@ -114,3 +114,7 @@ Not verified:
 - [ ] Browser matrix: only Chromium on Linux. Playwright's Firefox gathers no ICE candidates here and WebKit needs libraries this machine lacks (`CROSS_BROWSER=1` is opt-in). Firefox, Safari, Edge, Windows, macOS, Android and iOS are untested.
 - [ ] A fresh VPS set up from the README alone; a 20 GiB transfer across two real networks.
 - Finding: with no STUN/TURN (`iceServers: []`), transfers work between browsers that can reach each other directly (same LAN) but likely fail across different networks. Milestone 6 (at least STUN) is needed for the main "send a file to a friend" case.
+
+# After Milestone 7
+- [x] Added STUN (`stun:stun.cloudflare.com:3478`) in `web/src/peer.ts`. The server answered a test binding request. TURN is still not set up. Needs `deploy/deploy.sh` to go live.
+- Bandwidth: direct transfers never pass through the VPS (only tiny signaling messages). Only a future TURN relay would use VPS bandwidth. The VPS is a generic KVM guest; the provider's monthly cap is unknown (check the hosting panel). eth0 has sent 1.0 GiB in the 1.5 days since boot.
