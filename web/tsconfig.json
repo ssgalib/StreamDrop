@@ -20,5 +20,6 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/*.test.ts"] /* node:test types need @types/node; node strips types itself */
 }

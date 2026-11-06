@@ -1,3 +1,5 @@
+import { LOW_WATER } from "./transfer";
+
 export type Signal =
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
@@ -8,7 +10,8 @@ type Events = {
   state(text: string): void;
   open(): void;
   closed(): void;
-  message(text: string): void;
+  message(data: string | ArrayBuffer): void;
+  low(): void;
 };
 
 export function createPeer(initiator: boolean, on: Events) {
@@ -19,6 +22,9 @@ export function createPeer(initiator: boolean, on: Events) {
 
   function useChannel(dc: RTCDataChannel) {
     channel = dc;
+    dc.binaryType = "arraybuffer";
+    dc.bufferedAmountLowThreshold = LOW_WATER;
+    dc.onbufferedamountlow = on.low;
     dc.onopen = on.open;
     dc.onclose = on.closed;
     dc.onmessage = (e) => on.message(e.data);
@@ -38,7 +44,7 @@ export function createPeer(initiator: boolean, on: Events) {
   if (initiator) {
     // Must exist before createOffer, or the offer won't include a data channel.
     // Channels are reliable unless maxRetransmits or maxPacketLifeTime is set.
-    useChannel(pc.createDataChannel("chat", { ordered: true }));
+    useChannel(pc.createDataChannel("file", { ordered: true }));
   } else {
     pc.ondatachannel = (e) => useChannel(e.channel);
   }
@@ -61,7 +67,8 @@ export function createPeer(initiator: boolean, on: Events) {
         pending.push(s.candidate);
       }
     },
-    send: (text: string) => channel?.send(text),
+    channel: () => channel!,
+    maxMessageSize: () => pc.sctp?.maxMessageSize,
     close: () => pc.close(),
   };
 }

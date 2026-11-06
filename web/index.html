@@ -19,11 +19,18 @@
 
       <section id="room" hidden>
         <p id="share" hidden>Share this token: <code id="token"></code></p>
-        <form id="chat">
-          <label>Message <input id="message" maxlength="1000" autocomplete="off" required disabled></label>
-          <button id="send" disabled>Send</button>
-        </form>
-        <ul id="log"></ul>
+        <div id="sender" hidden>
+          <label>File <input type="file" id="file" disabled></label>
+        </div>
+        <div id="offer" hidden>
+          <p>Incoming file: <strong id="offer-name"></strong> (<span id="offer-size"></span>)</p>
+          <button id="accept" type="button">Accept</button>
+          <button id="decline" type="button">Decline</button>
+        </div>
+        <div id="transfer" hidden>
+          <progress id="progress" value="0" max="1"></progress> <span id="pct">0%</span>
+          <button id="cancel" type="button">Cancel</button>
+        </div>
       </section>
 
       <p id="status" role="status">Not connected</p>

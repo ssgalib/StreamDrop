@@ -1,4 +1,6 @@
 import { createPeer, type Signal } from "./peer";
+import { CHUNK, createReceiver, createSender, parseMeta, type Meta, type Sink } from "./transfer";
+import { memorySink } from "./sinks";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const startSection = $("#start");
@@ -6,9 +8,12 @@ const roomSection = $("#room");
 const shareP = $("#share");
 const tokenEl = $("#token");
 const tokenInput = $<HTMLInputElement>("#token-input");
-const messageInput = $<HTMLInputElement>("#message");
-const sendBtn = $<HTMLButtonElement>("#send");
-const logEl = $("#log");
+const senderDiv = $("#sender");
+const fileInput = $<HTMLInputElement>("#file");
+const offerDiv = $("#offer");
+const transferDiv = $("#transfer");
+const progressEl = $<HTMLProgressElement>("#progress");
+const pctEl = $("#pct");
 const statusEl = $("#status");
 const errorEl = $("#error");
 
@@ -25,36 +30,151 @@ const errorText: Record<string, string> = {
   "server-busy": "The server is busy. Try again later.",
 };
 
-function addLog(line: string) {
-  const li = document.createElement("li");
-  li.textContent = line; // never innerHTML: peer text is untrusted
-  logEl.append(li);
+function fmtSize(n: number) {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GiB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(n / 1024).toFixed(1)} KiB`;
 }
 
-function setChatEnabled(on: boolean) {
-  messageInput.disabled = sendBtn.disabled = !on;
+function showProgress(done: number, total: number) {
+  progressEl.max = total || 1;
+  progressEl.value = done;
+  pctEl.textContent = `${total ? Math.floor((done / total) * 100) : 100}%`;
 }
 
 let ws: WebSocket | undefined;
 let peer: ReturnType<typeof createPeer> | undefined;
 let channelOpen = false;
 
+// One transfer at a time. "offered": meta sent or received, waiting for Accept. "active": bytes flowing.
+let state: "idle" | "offered" | "active" = "idle";
+let pendingFile: File | undefined;
+let incoming: Meta | undefined;
+let sender: ReturnType<typeof createSender> | undefined;
+let receiver: ReturnType<typeof createReceiver> | undefined;
+let sink: Sink | undefined;
+
+const sendCtl = (m: object) => peer!.channel().send(JSON.stringify(m));
+
+function resetTransfer() {
+  state = "idle";
+  pendingFile = incoming = sender = receiver = sink = undefined;
+  offerDiv.hidden = transferDiv.hidden = true;
+  fileInput.value = "";
+  fileInput.disabled = !channelOpen;
+}
+
+// Stop a transfer that did not finish: drop what was received and tell the user why.
+function endTransfer(message: string) {
+  sender?.cancel();
+  void sink?.abort();
+  resetTransfer();
+  showError(message);
+}
+
+// Local failure: also tell the peer so it stops too.
+function abortTransfer(message: string) {
+  try { sendCtl({ t: "cancel" }); } catch { /* channel already gone */ }
+  endTransfer(message);
+}
+
+const fail = (err: unknown) => abortTransfer(err instanceof Error ? err.message : String(err));
+
+function startTransfer() {
+  state = "active";
+  offerDiv.hidden = true;
+  transferDiv.hidden = false;
+}
+
+function onControl(msg: any) {
+  switch (msg.t) {
+    case "meta": {
+      const meta = state === "idle" ? parseMeta(msg) : null;
+      if (!meta) {
+        sendCtl({ t: "reject", reason: "invalid" });
+        showError("Peer sent an invalid file offer.");
+        return;
+      }
+      incoming = meta;
+      state = "offered";
+      $("#offer-name").textContent = meta.name; // textContent only: the name is untrusted
+      $("#offer-size").textContent = fmtSize(meta.size);
+      offerDiv.hidden = false;
+      break;
+    }
+    case "accept": {
+      const file = pendingFile;
+      if (state !== "offered" || !file) return;
+      startTransfer();
+      showProgress(0, file.size);
+      setStatus("Sending");
+      const chunk = Math.min(CHUNK, peer!.maxMessageSize() ?? CHUNK);
+      sender = createSender(file, peer!.channel(), chunk, (n) => showProgress(n, file.size));
+      sender.run().catch(fail);
+      break;
+    }
+    case "reject":
+      if (state !== "offered") return;
+      resetTransfer();
+      showError("Receiver declined the file.");
+      setStatus("Connected");
+      break;
+    case "ack":
+      if (typeof msg.bytes === "number") sender?.ack(msg.bytes);
+      break;
+    case "done":
+      if (!receiver) return fail(new Error("Unexpected end of file"));
+      receiver.done().then(() => {
+        resetTransfer();
+        setStatus("File received");
+      }, fail);
+      break;
+    case "saved":
+      if (state !== "active" || !sender) return;
+      resetTransfer();
+      setStatus("Complete");
+      break;
+    case "cancel":
+      if (state === "idle") return;
+      endTransfer("Peer cancelled the transfer.");
+      setStatus("Connected");
+      break;
+  }
+}
+
+// A crashed tab may never close its channel cleanly, so "disconnected" and "failed" count as lost too.
+function peerLost() {
+  setStatus("Peer disconnected");
+  if (state !== "idle") endTransfer("Peer disconnected during the transfer.");
+}
+
 const events = {
   signal: (s: Signal) => ws?.send(JSON.stringify(s)),
   state(text: string) {
-    setStatus(text);
     if (text === "failed") showError("Peer connection failed.");
+    if (text === "failed" || text === "disconnected") peerLost();
+    else setStatus(text === "connected" ? "Connected" : text);
   },
   open() {
     channelOpen = true;
-    setChatEnabled(true);
+    fileInput.disabled = state !== "idle";
     setStatus("Connected");
   },
   closed() {
     channelOpen = false;
-    setChatEnabled(false);
+    fileInput.disabled = true;
+    peerLost();
   },
-  message: (text: string) => addLog(`Peer: ${text}`),
+  message(data: string | ArrayBuffer) {
+    try {
+      if (typeof data === "string") return onControl(JSON.parse(data));
+      if (state === "active" && receiver) return receiver.chunk(data);
+      fail(new Error("Unexpected data from peer"));
+    } catch (err) {
+      fail(err);
+    }
+  },
+  low: () => sender?.wake(),
 };
 
 function connect(first: object) {
@@ -69,7 +189,7 @@ function connect(first: object) {
       switch (msg.type) {
         case "created":
           startSection.hidden = true;
-          roomSection.hidden = shareP.hidden = false;
+          roomSection.hidden = shareP.hidden = senderDiv.hidden = false;
           tokenEl.textContent = msg.token;
           setStatus("Waiting for peer");
           break;
@@ -90,8 +210,9 @@ function connect(first: object) {
           await peer?.handle(msg);
           break;
         case "peer-left":
+          // The direct connection reports its own failure.
+          if (channelOpen) break;
           peer?.close();
-          setChatEnabled(false);
           setStatus("Peer left. Reload to start again.");
           break;
         case "error":
@@ -114,10 +235,40 @@ $("#join-form").addEventListener("submit", (e) => {
   e.preventDefault();
   connect({ type: "join", token: tokenInput.value.trim() });
 });
-$("#chat").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const text = messageInput.value;
-  peer?.send(text);
-  addLog(`You: ${text}`);
-  messageInput.value = "";
+
+fileInput.addEventListener("change", () => {
+  const file = fileInput.files?.[0];
+  if (!file || state !== "idle" || !channelOpen) return;
+  showError("");
+  pendingFile = file;
+  state = "offered";
+  fileInput.disabled = true;
+  transferDiv.hidden = false;
+  showProgress(0, file.size);
+  setStatus("Waiting for receiver to accept");
+  sendCtl({ t: "meta", name: file.name, size: file.size, type: file.type });
+});
+
+$("#accept").addEventListener("click", () => {
+  const m = incoming;
+  if (state !== "offered" || !m) return;
+  showError("");
+  sink = memorySink(m.name, m.type);
+  receiver = createReceiver(m.size, sink, peer!.channel(), (n) => showProgress(n, m.size), fail);
+  startTransfer();
+  showProgress(0, m.size);
+  setStatus("Receiving");
+  sendCtl({ t: "accept" });
+});
+
+$("#decline").addEventListener("click", () => {
+  if (state !== "offered") return;
+  sendCtl({ t: "reject", reason: "declined" });
+  resetTransfer();
+});
+
+$("#cancel").addEventListener("click", () => {
+  if (state === "idle") return;
+  abortTransfer("Transfer cancelled.");
+  setStatus("Connected");
 });
