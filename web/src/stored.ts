@@ -2,10 +2,9 @@ import { downloadStored, fetchStored, removeUpload, upload, type Stored, type Up
 import { chooseSink } from "./sinks";
 import { drawQr } from "./qr";
 import { fmtSize } from "./format";
+import { flashCopied, setStatus, showError } from "./ui";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
-const showError = (t: string) => ($("#error").textContent = t);
-const setStatus = (t: string) => ($("#status").textContent = t);
 const when = (iso: string) => new Date(iso).toLocaleString();
 
 function progress(el: HTMLProgressElement, text: HTMLElement) {
@@ -46,7 +45,7 @@ export async function initStored() {
       done = await upload(file, keyInput.value, progress(bar, barText));
       $<HTMLInputElement>("#store-link").value = done.link;
       drawQr($<SVGSVGElement & HTMLElement>("#store-qr"), done.link);
-      $("#store-expiry").textContent = when(done.expiresAt);
+      $("#store-expiry").textContent = `Available until ${when(done.expiresAt)}`;
       $("#store-result").hidden = false;
       setStatus("Uploaded. You can close this page.");
     } catch (err) {
@@ -59,8 +58,8 @@ export async function initStored() {
   });
 
   $("#store-copy").addEventListener("click", () => {
-    const link = $<HTMLInputElement>("#store-link");
-    navigator.clipboard.writeText(link.value).catch(() => link.select());
+    const link = $<HTMLTextAreaElement>("#store-link");
+    navigator.clipboard.writeText(link.value).then(() => flashCopied($("#store-copy")), () => link.select());
   });
 
   $("#store-delete").addEventListener("click", async () => {
@@ -83,6 +82,7 @@ export async function openStoredLink(link: { id: string; key: string }) {
   } catch (err) {
     setStatus("Not available");
     showError(err instanceof Error ? err.message : String(err));
+    $("#download").hidden = true; // nothing to show: just the error and "Start a new transfer"
     return;
   }
   $("#dl-name").textContent = stored.meta.name; // textContent only: the name comes from the uploader

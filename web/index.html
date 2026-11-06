@@ -1,83 +1,191 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>StreamDrop</title>
-  </head>
-  <body>
-    <main>
-      <h1>StreamDrop</h1>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>StreamDrop</title>
+</head>
+<body>
 
-      <section id="unfinished" hidden>
-        <p>Unfinished transfer: <strong id="unfinished-name"></strong> <span id="unfinished-pct"></span></p>
-        <div id="unfinished-sender" hidden>
-          <label>Choose the same file to continue <input type="file" id="resume-file"></label>
+<!-- Icon sprite (inline SVG, same-document references; nothing external) -->
+<svg class="visually-hidden" width="0" height="0" focusable="false" aria-hidden="true">
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.9-3"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.9 3"/><path d="M20 20v-4h-4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></symbol>
+</svg>
+
+<div class="shell">
+<div class="page">
+
+  <h1 class="brand">
+    <a href="./">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M8 12h8"/><path d="m13.5 9 2.5 3-2.5 3"/></svg>
+      StreamDrop
+    </a>
+  </h1>
+
+  <main id="main">
+
+    <!-- Polite status + assertive error. Always in the DOM so screen readers announce changes. -->
+    <p class="status" id="status" role="status"></p>
+    <p class="alert" id="error" role="alert" hidden></p>
+    <p class="back" id="back"><a class="btn btn-outline" href="./">Start a new transfer</a></p>
+
+    <!-- 1. Start page -->
+    <section id="unfinished" class="card" aria-labelledby="unfinished-title" hidden>
+      <h2 class="card-title" id="unfinished-title">Unfinished transfer</h2>
+      <p class="filerow"><span class="name" id="unfinished-name"></span> <span class="pct" id="unfinished-pct"></span></p>
+      <div class="stack-sm" id="unfinished-sender" hidden>
+        <div>
+          <label for="resume-file">Choose the same file to continue</label>
+          <input type="file" id="resume-file">
         </div>
-        <button id="resume" type="button">Resume</button>
-        <button id="discard" type="button">Discard</button>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="resume">Resume</button>
+        <button type="button" class="btn btn-outline" id="discard">Discard</button>
+      </div>
+    </section>
+
+    <div class="stack" id="start">
+      <p class="tagline">Send a file straight from one browser to another.</p>
+
+      <section class="card" aria-labelledby="create-title">
+        <h2 class="card-title" id="create-title">Send a file</h2>
+        <p class="card-desc">Create a room, share the link, and the file goes directly to the other device.</p>
+        <button type="button" class="btn btn-primary btn-block" id="create">Create Room</button>
       </section>
 
-      <section id="start">
-        <button id="create" type="button">Create Room</button>
-        <form id="join-form">
-          <label>Room token <input id="token-input" required autocomplete="off"></label>
-          <button>Join Room</button>
+      <section class="card" aria-labelledby="join-title">
+        <h2 class="card-title" id="join-title">Join a room</h2>
+        <p class="card-desc">Have a token instead of a link? Enter it here.</p>
+        <form class="stack-sm" id="join-form">
+          <div>
+            <label for="token-input">Room token</label>
+            <input type="text" id="token-input" name="token" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Paste your room token" required>
+          </div>
+          <button type="submit" class="btn btn-outline btn-block">Join Room</button>
         </form>
       </section>
 
-      <section id="room" hidden>
-        <p id="share" hidden>
-          <label>Invite link <input id="link" readonly></label>
-          <button id="copy" type="button">Copy</button><br>
-          Or share the token: <code id="token"></code>
-        </p>
-        <div id="qr" hidden>
-          <p>Or scan with a phone camera:</p>
-          <svg id="qr-code" role="img" aria-label="QR code for the invite link"></svg>
+      <!-- Optional: the server turns this on -->
+      <section class="card" id="stored" aria-labelledby="stored-title" hidden>
+        <h2 class="card-title" id="stored-title">Upload for later</h2>
+        <p class="card-desc">Keep a file on the server for a limited time so the other person can download it when they are ready.</p>
+        <div class="stack-sm">
+          <div>
+            <label for="store-key">Passcode</label>
+            <input type="password" id="store-key" name="passcode" autocomplete="off">
+          </div>
+          <div>
+            <label for="store-file">File</label>
+            <input type="file" id="store-file">
+          </div>
+          <button type="button" class="btn btn-primary btn-block" id="store-upload"><svg aria-hidden="true"><use href="#i-upload"/></svg>Upload</button>
+          <label for="store-progress" class="visually-hidden">Upload progress</label>
+          <progress id="store-progress" max="100" value="0" hidden></progress>
+          <p class="progress-text" id="store-pct" hidden></p>
         </div>
-        <div id="renew" hidden><button id="renew-btn" type="button">Create New Link</button></div>
-        <p>Keep both tabs open until the transfer finishes.</p>
-        <div id="sender" hidden>
-          <label>File <input type="file" id="file" disabled></label>
-        </div>
-        <div id="offer" hidden>
-          <p>Incoming file: <strong id="offer-name"></strong> (<span id="offer-size"></span>)</p>
-          <button id="accept" type="button">Accept</button>
-          <button id="decline" type="button">Decline</button>
-        </div>
-        <div id="transfer" hidden>
-          <progress id="progress" aria-label="Transfer progress" value="0" max="1"></progress> <span id="pct">0%</span>
-          <button id="cancel" type="button">Cancel</button>
+
+        <div class="result" id="store-result" hidden>
+          <h3 class="card-title">Your file is ready</h3>
+          <div>
+            <label for="store-link">Download link</label>
+            <div class="copyrow">
+              <textarea id="store-link" readonly rows="3"></textarea>
+              <button type="button" class="btn btn-outline" id="store-copy"><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
+            </div>
+          </div>
+          <div class="qr-frame"><svg class="qr-svg" id="store-qr" viewBox="0 0 37 37" role="img" aria-label="QR code for the download link"></svg></div>
+          <p class="hint" id="store-expiry"></p>
+          <button type="button" class="btn btn-danger" id="store-delete"><svg aria-hidden="true"><use href="#i-trash"/></svg>Delete now</button>
         </div>
       </section>
+    </div>
 
-      <section id="stored" hidden>
-        <h2>Upload for later</h2>
-        <p>The file is encrypted in your browser and kept on the server for 24 hours, so you can close this page.
-          Only people with the link can open it.</p>
-        <label>Passcode <input id="store-key" type="password" autocomplete="off"></label>
-        <label>File <input type="file" id="store-file"></label>
-        <button id="store-upload" type="button">Upload</button>
-        <p><progress id="store-progress" aria-label="Upload progress" value="0" max="1" hidden></progress> <span id="store-pct" hidden></span></p>
-        <div id="store-result" hidden>
-          <label>Download link <input id="store-link" readonly></label>
-          <button id="store-copy" type="button">Copy</button>
-          <button id="store-delete" type="button">Delete now</button>
-          <p>Available until <span id="store-expiry"></span></p>
-          <svg id="store-qr" role="img" aria-label="QR code for the download link"></svg>
+    <!-- 2–5. Room (sender and receiver) -->
+    <section class="stack" id="room" aria-label="Transfer room" hidden>
+
+      <div class="card" id="share" hidden>
+        <h2 class="card-title">Invite someone</h2>
+        <p class="card-desc">Open the link or scan the code on the other device.</p>
+        <div class="invite">
+          <div class="qr-frame" id="qr"><svg class="qr-svg" id="qr-code" viewBox="0 0 37 37" role="img" aria-label="QR code for the invite link"></svg></div>
+          <div class="stack-sm">
+            <div>
+              <label for="link">Invite link</label>
+              <div class="copyrow">
+                <textarea id="link" readonly rows="3"></textarea>
+                <button type="button" class="btn btn-outline" id="copy"><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
+              </div>
+            </div>
+            <p class="tokenrow"><span class="hint">Or enter this token:</span> <code class="token" id="token"></code></p>
+          </div>
         </div>
-      </section>
+      </div>
 
-      <section id="download" hidden>
-        <p>File: <strong id="dl-name"></strong> (<span id="dl-size"></span>), available until <span id="dl-expiry"></span></p>
-        <button id="dl-button" type="button" hidden>Download</button>
-        <p><progress id="dl-progress" aria-label="Download progress" value="0" max="1" hidden></progress> <span id="dl-pct" hidden></span></p>
-      </section>
+      <div class="card" id="renew" hidden>
+        <h2 class="card-title">Link expired.</h2>
+        <p class="card-desc">Create a new link to invite the other device.</p>
+        <button type="button" class="btn btn-primary" id="renew-btn"><svg aria-hidden="true"><use href="#i-refresh"/></svg>Create New Link</button>
+      </div>
 
-      <p id="status" role="status">Not connected</p>
-      <p id="error" role="alert"></p>
-    </main>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+      <p class="note">Keep both tabs open until the transfer finishes.</p>
+
+      <div class="card" id="sender" hidden>
+        <h2 class="card-title">Choose a file to send</h2>
+        <p class="card-desc">The other person will be asked to accept it first.</p>
+        <label for="file">File</label>
+        <input type="file" id="file">
+      </div>
+
+      <div class="card" id="offer" role="group" aria-labelledby="offer-title" hidden>
+        <h2 class="card-title" id="offer-title">Incoming file</h2>
+        <p class="filename" id="offer-name" tabindex="0"></p>
+        <dl class="facts">
+          <dt>Size</dt>
+          <dd id="offer-size"></dd>
+        </dl>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="accept">Accept</button>
+          <button type="button" class="btn btn-outline" id="decline">Decline</button>
+        </div>
+      </div>
+
+      <div class="card" id="transfer" hidden>
+        <p class="filename" id="transfer-name" tabindex="0"></p>
+        <label class="visually-hidden" for="progress">Transfer progress</label>
+        <progress id="progress" max="100" value="0"></progress>
+        <p class="progress-text" id="pct"></p>
+        <button type="button" class="btn btn-outline" id="cancel">Cancel</button>
+      </div>
+
+    </section>
+
+    <!-- 6. Stored mode: download page -->
+    <section class="card" id="download" aria-labelledby="dl-title" hidden>
+      <h2 class="card-title" id="dl-title">A file is waiting for you</h2>
+      <p class="filename" id="dl-name" tabindex="0"></p>
+      <dl class="facts">
+        <dt>Size</dt>
+        <dd id="dl-size"></dd>
+        <dt>Expires</dt>
+        <dd id="dl-expiry"></dd>
+      </dl>
+      <button type="button" class="btn btn-primary btn-block" id="dl-button" hidden><svg aria-hidden="true"><use href="#i-download"/></svg>Download</button>
+      <label class="visually-hidden" for="dl-progress">Download progress</label>
+      <progress id="dl-progress" max="100" value="0" hidden></progress>
+      <p class="progress-text" id="dl-pct" hidden></p>
+    </section>
+
+  </main>
+</div>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
 </html>

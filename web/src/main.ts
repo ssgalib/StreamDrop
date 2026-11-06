@@ -6,6 +6,7 @@ import {
 import { chooseSink, cleanOpfs, discardParts, openParts, partsOffset } from "./sinks";
 import { drawQr } from "./qr";
 import { fmtSize } from "./format";
+import { flashCopied, setStatus, showError } from "./ui";
 import { initStored, openStoredLink } from "./stored";
 import { parseStoredLink } from "./store";
 import "./style.css";
@@ -26,14 +27,11 @@ const offerDiv = $("#offer");
 const transferDiv = $("#transfer");
 const progressEl = $<HTMLProgressElement>("#progress");
 const pctEl = $("#pct");
-const statusEl = $("#status");
-const errorEl = $("#error");
+const transferNameEl = $("#transfer-name");
 const unfinishedSection = $("#unfinished");
 const resumeBtn = $("#resume");
 const resumeFile = $<HTMLInputElement>("#resume-file");
 
-const setStatus = (t: string) => (statusEl.textContent = t);
-const showError = (t: string) => (errorEl.textContent = t);
 
 const errorText: Record<string, string> = {
   "bad-message": "The server rejected a message.",
@@ -129,6 +127,7 @@ function resetTransfer() {
   resumeOffset = 0;
   clearRecord();
   offerDiv.hidden = transferDiv.hidden = true;
+  progressEl.classList.remove("is-frozen");
   void lock?.release();
   lock = null;
   fileInput.value = "";
@@ -183,10 +182,17 @@ function startSending(file: File, from: number) {
   sender.run().catch(fail);
 }
 
+// The transfer card: file name, progress, Cancel. The name is untrusted, so textContent only.
+function showTransfer(name: string) {
+  transferNameEl.textContent = name;
+  transferDiv.hidden = false;
+}
+
 function startTransfer() {
   state = "active";
   offerDiv.hidden = true;
-  transferDiv.hidden = false;
+  progressEl.classList.remove("is-frozen");
+  showTransfer(transferMeta?.name ?? "");
   // Keeps the screen on so the tab isn't suspended; a refusal is fine.
   navigator.wakeLock?.request("screen").then((l) => {
     if (state === "active") lock = l;
@@ -300,6 +306,7 @@ function pause() {
   peer = undefined;
   void lock?.release();
   lock = null;
+  progressEl.classList.add("is-frozen");
   setStatus("Reconnecting…");
   showError("");
   void (async () => {
@@ -402,7 +409,7 @@ function connect(first: { type: string; token?: string }) {
           setStatus("Connecting");
           break;
         case "peer-joined":
-          qrDiv.hidden = true; // the link is used up
+          shareP.hidden = qrDiv.hidden = true; // the link is used up
           peer = createPeer(true, msg.iceServers ?? [], events);
           setStatus("Connecting");
           await peer.start();
@@ -459,10 +466,7 @@ $("#create").addEventListener("click", () => connect({ type: "create" }));
 $("#renew-btn").addEventListener("click", () => connect({ type: "create" }));
 copyBtn.addEventListener("click", () => {
   navigator.clipboard.writeText(linkEl.value).then(
-    () => {
-      copyBtn.textContent = "Copied";
-      setTimeout(() => (copyBtn.textContent = "Copy"), 2000);
-    },
+    () => flashCopied(copyBtn),
     () => linkEl.select(), // clipboard blocked: select it so Ctrl+C works
   );
 });
@@ -480,7 +484,7 @@ fileInput.addEventListener("change", async () => {
   role = "sender";
   transferId = newTransferId();
   fileInput.disabled = true;
-  transferDiv.hidden = false;
+  showTransfer(file.name);
   showProgress(0, file.size);
   setStatus("Waiting for receiver to accept");
   const fp = await fingerprint(file);
@@ -557,7 +561,8 @@ function resumeUi(rec: SavedTransfer, done: number) {
   state = "paused";
   startSection.hidden = true;
   roomSection.hidden = false;
-  transferDiv.hidden = false;
+  showTransfer(rec.name);
+  progressEl.classList.add("is-frozen");
   showProgress(done, rec.size);
   setStatus("Reconnecting…");
   connect({ type: "rejoin", token: rec.id });
@@ -597,6 +602,10 @@ $("#discard").addEventListener("click", async () => {
   unfinishedSection.hidden = true;
   if (rec?.role === "receiver") await discardParts(rec.id);
 });
+
+// Pasting a link into a tab that already has the site open only changes the "#" part, which doesn't
+// reload the page. The links are read at load, so reload to act on them.
+addEventListener("hashchange", () => location.reload());
 
 // Links carry their secret after "#", which the server never sees. Take it out of the address bar.
 const stored = parseStoredLink(location.hash);

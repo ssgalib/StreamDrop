@@ -182,3 +182,18 @@ Not verified:
 - Stored mode through the real tunnel (500 MiB), `df` after expiry on the VPS, and other sites' status after enabling it.
 - Running Stored uploads are counted as bytes arrive, but a single finished-file budget overshoot is bounded only by chunks in flight.
 - Whole-file hashing is not used: a middle-of-file edit that keeps size and timestamp would not be noticed on resume.
+
+# New UI from Claude Design (integrated, tested, NOT deployed)
+- [x] The designer's `index.html` and `style.css` (root, untracked) were moved into `web/index.html` and `web/src/style.css`; the old versions are in git history.
+- Wiring fixed so the design works with the real script (the mockup was static):
+  - added the app `<script type="module">` and removed the `<link>` (the CSS is imported by `main.ts`, so Vite emits the link on build)
+  - added the missing `#resume-file` input inside `#unfinished-sender` (without it the script crashed at startup)
+  - `#progress-text` renamed to `#pct`; `#dl-button` starts `hidden`
+  - removed the sample text (file names, links, token, progress numbers) the script would otherwise leave on screen; token placeholder now "Paste your room token"
+  - new `web/src/ui.ts`: `setStatus` sets the `data-state` that colours the status dot, `showError` toggles the banner's `hidden`, `flashCopied` keeps the Copy button's icon and swaps it to a tick
+  - progress bar gets `is-frozen` while reconnecting; transfer card shows the file name; the invite card hides once the other person joins; Stored expiry reads "Available until …"
+  - a failed Stored link now hides the empty download card (the error and "Start a new transfer" remain)
+  - `hashchange` reloads the page, so pasting an invite link into a tab that already has the site open works
+- **The CSS tokens are stand-ins** (shadcn-style neutral palette): the designer's header says the design system files were not reachable. Swap the three token blocks at the top of `web/src/style.css` for the real values; nothing below them needs editing.
+- Verified: all 16 e2e, 27 unit and Go tests pass; no sideways scroll in 30 renders (phone dark and light, desktop light; 255-character file name, Stored pages, error, reconnecting); screenshots inspected; full transfer and download under the production CSP with zero violations and the stylesheet applied.
+- Not verified: a screen reader; Firefox and Safari rendering (the CSS uses oklch, container queries, `field-sizing` and `content: … / ""`, so very old browsers will look plainer); the real design system.
