@@ -10,7 +10,8 @@ export type Channel = { bufferedAmount: number; send(data: string | ArrayBuffer)
 // id names the transfer on the wire; fp (a fingerprint of the file) lets it be resumed. Both are required.
 // batch ties together the files picked at the same time, so the receiver can accept them all at once.
 export type Batch = { id: string; i: number; n: number };
-export type Meta = { name: string; size: number; type: string; id: string; fp: string; batch?: Batch };
+// rel is the folder a file sits in, when a whole folder is sent. Only apps use it, and they must check it: it is a path from a stranger.
+export type Meta = { name: string; size: number; type: string; id: string; fp: string; batch?: Batch; rel?: string };
 
 const ID_RE = /^[A-Z2-7]{26}$/; // same shape as the server's room ids
 const FP_RE = /^[0-9a-f]{64}$/;
@@ -40,7 +41,8 @@ export function parseMeta(m: any): Meta | null {
     if (n < 1 || n > MAX_FILES || i < 0 || i >= n) return null;
     b = { id: bid, i, n };
   }
-  return { ...info, id, fp, ...(b && { batch: b }) };
+  const rel = typeof m.rel === "string" && m.rel && m.rel.length <= 1024 ? m.rel : undefined;
+  return { ...info, id, fp, ...(b && { batch: b }), ...(rel && { rel }) };
 }
 
 // Several transfers share one DataChannel, so every chunk starts with the 26-character id of its transfer.

@@ -46,6 +46,48 @@ out = {
         "answer": b64u(mac(KA, b"confirmanswer")),
     },
 }
+# Hostile names from the other device. "name" is cleaned into something safe; a bad "rel" is dropped whole, so the
+# file lands flat in the target folder. These are expectations, written by hand, not computed.
+out["names"] = [
+    ["report.pdf", "report.pdf"],
+    ["../../etc/passwd", ".._.._etc_passwd"],
+    ["..\\..\\windows\\evil.dll", ".._.._windows_evil.dll"],
+    ["/etc/passwd", "_etc_passwd"],
+    ["C:\\Windows\\evil", "C__Windows_evil"],
+    ["notes.txt:hidden", "notes.txt_hidden"],
+    ["a\u0000b\u001fc", "abc"],
+    ["CON", "_CON"],
+    ["nul.txt", "_nul.txt"],
+    ["com1", "_com1"],
+    ["LPT9.tar.gz", "_LPT9.tar.gz"],
+    ["console.txt", "console.txt"],
+    ["trailing. . ", "trailing"],
+    ["...", "file"],
+    ["", "file"],
+    ["exe\u202egnp.txt", "exegnp.txt"],
+    ["\u2066x\u2069.txt", "x.txt"],
+    ["名前.txt", "名前.txt"],
+]
+out["rels"] = [
+    ["photos/2026", "photos/2026"],
+    ["a", "a"],
+    ["../outside", ""],
+    ["a/../../b", ""],
+    ["a/./b", ""],
+    ["/etc", ""],
+    ["a//b", ""],
+    ["a\\b", ""],
+    ["C:/Windows", ""],
+    ["a:b/c", ""],
+    ["a/CON/b", ""],
+    ["a/nul.txt", ""],
+    ["trailing./b", ""],
+    ["trailing /b", ""],
+    ["a\u0000/b", ""],
+    ["\u202ea/b", ""],
+    [".streamdrop/x", ""],
+    ["/".join(["d"] * 33), ""],
+]
 path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vectors.json")
 with open(path, "w") as f:
     json.dump(out, f, indent=2)

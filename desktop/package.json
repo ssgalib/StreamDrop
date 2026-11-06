@@ -1,0 +1,29 @@
+{
+  "name": "streamdrop-desktop",
+  "productName": "StreamDrop",
+  "version": "0.1.0",
+  "description": "Send files directly between your devices",
+  "author": "StreamDrop <noreply@kurohane.xyz>",
+  "homepage": "https://streamdrop.kurohane.xyz",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "ui": "npm --prefix ../web run build && rm -rf ui && cp -r ../web/dist ui",
+    "start": "npm run ui && electron .",
+    "test": "node --test *.test.js",
+    "test:e2e": "npm run ui && playwright test",
+    "dist": "npm run ui && electron-builder --linux"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "xyz.kurohane.streamdrop",
+    "files": ["main.js", "preload.js", "files.js", "icon.png", "ui/**"],
+    "linux": { "target": ["AppImage", "deb"], "category": "Network", "icon": "icon.png", "maintainer": "StreamDrop" },
+    "win": { "target": ["nsis"] },
+    "mac": { "target": ["dmg"] }
+  }
+}

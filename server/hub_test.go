@@ -256,9 +256,9 @@ func TestBothDevicesOfAPairStayRegistered(t *testing.T) {
 	a, b := &Peer{}, &Peer{}
 	h.Listen([]string{idA}, a)
 	h.Listen([]string{idA}, b)
-	rung, listening := h.Ring(idA)
-	if !listening || len(rung) != 2 {
-		t.Fatalf("rung %d, listening %v", len(rung), listening)
+	rung, listeners := h.Ring(idA)
+	if listeners != 2 || len(rung) != 2 {
+		t.Fatalf("rung %d, listeners %d", len(rung), listeners)
 	}
 }
 
@@ -271,7 +271,7 @@ func TestRingIsLimitedPerListener(t *testing.T) {
 	if rung, _ := h.Ring(idA); len(rung) != 1 {
 		t.Fatal("first ring missing")
 	}
-	if rung, listening := h.Ring(idA); len(rung) != 0 || !listening {
+	if rung, listeners := h.Ring(idA); len(rung) != 0 || listeners != 1 {
 		t.Fatal("second ring not limited, or listener forgotten")
 	}
 	// A device arriving just after someone else was rung must still hear about it.

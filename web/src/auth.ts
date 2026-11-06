@@ -102,10 +102,11 @@ export type GateOptions = {
   mode: Mode;
   key?: Promise<Uint8Array>; // absent: this device has nothing to prove with, the connection can only be temporary
   required: boolean; // the other device must prove itself: no falling back to temporary
+  caps?: string[]; // what else this device offers
   fingerprints(): Fingerprints | null;
   send(msg: object): void;
   deliver(data: string | ArrayBuffer): void; // for the layers above; held back until the gate opens
-  passed(verified: boolean): void;
+  passed(verified: boolean, peerCaps: string[]): void;
   failed(reason: "auth" | "upgrade"): void;
 };
 
@@ -115,6 +116,7 @@ export function createGate(o: GateOptions) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let work = Promise.resolve(); // crypto is async, and messages must still be handled in order
   let t: Uint8Array | undefined;
+  let peerCaps: string[] = [];
   const held: (string | ArrayBuffer)[] = [];
   const mine = crypto.getRandomValues(new Uint8Array(32));
   const other: Role = o.role === "offer" ? "answer" : "offer";
@@ -134,7 +136,7 @@ export function createGate(o: GateOptions) {
     const waiting = held.splice(0);
     state = "open";
     stop();
-    o.passed(verified);
+    o.passed(verified, peerCaps);
     for (const d of waiting) o.deliver(d);
   }
   // A version 1 peer never says hello.
@@ -173,6 +175,7 @@ export function createGate(o: GateOptions) {
   async function onHello(m: any) {
     if (!Number.isSafeInteger(m.v) || !Number.isSafeInteger(m.min) || !Array.isArray(m.caps)) return fail("auth");
     if (m.v < MIN_VERSION || m.min > VERSION) return fail("upgrade");
+    peerCaps = m.caps.filter((c: unknown) => typeof c === "string");
     if (o.key && m.caps.includes(o.mode)) {
       state = "auth";
       arm(AUTH_MS, () => fail("auth"));
@@ -198,7 +201,7 @@ export function createGate(o: GateOptions) {
 
   return {
     start() {
-      o.send({ t: "hello", v: VERSION, min: MIN_VERSION, caps: o.key ? [o.mode] : [] });
+      o.send({ t: "hello", v: VERSION, min: MIN_VERSION, caps: [...(o.key ? [o.mode] : []), ...(o.caps ?? [])] });
       arm(o.required ? AUTH_MS : HELLO_MS, noHello);
     },
     message(data: string | ArrayBuffer) {

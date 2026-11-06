@@ -54,6 +54,12 @@
     <div class="stack" id="home">
       <p class="tagline">Send files straight between two devices. Nothing is stored on a server.</p>
 
+      <!-- Desktop app only: main.ts shows these -->
+      <section class="card" id="saved" aria-labelledby="saved-title" hidden>
+        <h2 class="card-title" id="saved-title">Saved devices</h2>
+        <ul class="devices" id="devices"></ul>
+      </section>
+
       <section class="card" aria-labelledby="create-title">
         <h2 class="card-title" id="create-title">Connect two devices</h2>
         <p class="card-desc">Once they are connected, either device can send and receive files.</p>
@@ -100,6 +106,14 @@
           <button type="button" class="btn btn-danger" id="store-delete"><svg aria-hidden="true"><use href="#i-trash"/></svg>Delete now</button>
         </div>
       </details>
+
+      <!-- Desktop app only -->
+      <section class="card" id="app-settings" aria-labelledby="settings-title" hidden>
+        <h2 class="card-title" id="settings-title">Settings</h2>
+        <label class="device-always"><input type="checkbox" id="autostart"> Start with this computer, so saved devices can reach it</label>
+        <p class="card-desc">Files are saved in <span id="downloads"></span></p>
+        <button type="button" class="btn btn-outline btn-sm" id="pick-downloads">Change folder</button>
+      </section>
     </div>
 
 
@@ -135,6 +149,15 @@
         <button type="button" class="btn btn-outline" id="leave">Disconnect</button>
       </div>
 
+      <p class="card-desc" id="temporary" hidden>Temporary connection: this device can't be saved or verified.</p>
+
+      <div class="bulk" id="save-offer" hidden>
+        <p id="save-text">Save this device?</p>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="save-device">Save</button>
+        </div>
+      </div>
+
       <div class="card ended" id="ended" hidden>
         <p class="card-desc" id="ended-text">The other device disconnected.</p>
         <button type="button" class="btn btn-primary" id="restart">Start a new connection</button>
@@ -146,6 +169,8 @@
         <span class="dz-sub">or <span class="dz-link">choose files</span>. The other device will be asked to accept them.</span>
         <input type="file" id="files" class="visually-hidden" multiple>
       </label>
+
+      <button type="button" class="btn btn-outline" id="send-folder" hidden>Send a folder</button>
 
       <div class="bulk" id="bulk" hidden>
         <p id="bulk-text">Files are waiting for you</p>

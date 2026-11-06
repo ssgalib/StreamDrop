@@ -245,3 +245,23 @@ Chosen with the user: pair by link, QR or code (no same-network discovery, for p
 - Tests: Go `-race -count=3`; 67 unit; e2e adds a wrong key, a tampered fingerprint, `P` absent from every WebSocket frame, a typed code, proofs after a drop and after reloads, a failed proof on reconnect. New pages against a real build of 9967382 pass both ways (`OLD_DIST=... npm run test:e2e -- oldpage`).
 - Not done from M0: deploying, and the Cloudflare idle test (does a ping every 45 s keep a socket open through the Tunnel?). Both need the live host.
 - Limit: a 500-file batch shows on the other device 100 at a time, as answers come in.
+
+# plan_3.md M2: desktop app (built, tested on Linux only, NOT released)
+- [x] `desktop/`: Electron with the UI bundled on `app://streamdrop`, `contextIsolation`, `sandbox`, strict CSP, navigation locked to the bundle; single instance; close to tray; autostart; notifications; sleep blocked only while files move.
+- [x] `desktop/files.js` (no Electron, tested in plain Node): file sink with `fsync` every 64 MiB and a sidecar, never overwrites, name and folder checks from shared vectors, folder walk that refuses links leading outside.
+- [x] `web/src/saved.ts`: pair key exchange, derived room id and proof key, listener socket. `web/src/app.ts`: everything only the app does. Absent in a browser: `window.streamdropApp` isn't there.
+- [x] Saved devices, `safeStorage` (async API; the sync one is deprecated in Electron 45), refusal on `basic_text`, rename, remove, `unpair`, always accept (2 GiB, own subfolder), 2-minute idle close, folders with `rel`, resume by path.
+- Bugs only real runs found:
+  - The caller's own listener counted as "the other device is reachable". `created` now carries `listeners`, and the client compares with 1.
+  - On SIGKILL, recent `localStorage` writes are lost, so a killed app forgot its files. The app keeps its record in a file through the main process.
+  - A connection restored after a restart counted as new, so nothing resumed.
+  - `inside()` refused harmless names starting with `..`.
+  - The phone rule "rejoin a killed tab" skipped the home screen on restart. It no longer runs in the app.
+- Tests: 17 file tests; 12 Electron e2e, real apps and a real Go server: both ways to disk, lockdown, saved devices after both restart, calling a device that is off, wrong key, hostile name past the sender's own checks, always accept, folders, **SIGKILL of both at 40% of 300 MiB then finishing by themselves with matching sha256**, no keyring, autostart, idle close, browser to app both ways.
+- Packaged build: AppImage 120 MB, boots. `linux-unpacked` checked: runs from the asar, `canSave` false despite the test flag, links point at production.
+- Not verified: the `.deb` (bundled `fpm` exits 127 on this machine, probably a host library; try on Ubuntu or CI); Windows and macOS at all, including `Zone.Identifier`, `safeStorage` there and `setLoginItemSettings`; the tray (windows stayed hidden and tray was off in tests, and Hyprland may have none); real keyrings (none here, so only the refusal path ran; the sealing code has never executed); notifications; the folder dialog (stubbed); memory and speed over IPC at large sizes; 20 GiB; two machines on different networks.
+- Left out on purpose: automatic updates, macOS quarantine mark, signing, Store packaging (M5).
+
+# plan_3.md: not started
+- M1 Android spike: needs a phone on USB. The plan makes it the gate for all Android work, so M3 is not started.
+- M4 device matrix depends on Android. M5 needs accounts, signing and decisions in section 7.

@@ -20,6 +20,7 @@ export type ConnectionEvents = {
   session(id: string): void; // the shared secret is known, so the pair can be saved and rejoined later
   error(text: string): void;
   refused(text: string): void; // the other device couldn't be verified, or is too old: the connection is over
+  listeners?(n: number): void; // waiting in a saved device's room: how many sockets listen on it, ours included
 };
 
 const errorText: Record<string, string> = {
@@ -41,7 +42,7 @@ const SESSION_RE = /^[A-Z2-7]{26}$/;
 
 const defaultSignalUrl = () => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 
-export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignalUrl()) {
+export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignalUrl(), caps: string[] = []) {
   let ws: WebSocket | undefined;
   let peer: ReturnType<typeof createPeer> | undefined;
   let phase: Phase = "idle";
@@ -57,6 +58,7 @@ export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignal
   let proofKey: Promise<Uint8Array> | undefined;
   let required = false; // the other device must prove itself, or the connection is refused
   let verified = false;
+  let peerCaps: string[] = [];
 
   function useInviteKey(p?: string) {
     mode = "pair";
@@ -111,9 +113,10 @@ export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignal
   }
 
   // The channel is open and the other device is who it should be, as far as this connection can tell.
-  function ready(isVerified: boolean) {
+  function ready(isVerified: boolean, theirCaps: string[]) {
     opened = true;
     verified = isVerified;
+    peerCaps = theirCaps;
     if (isVerified) required = true; // from now on, every reconnect must prove itself too
     else proofKey = inviteKey = undefined;
     clearTimeout(retry);
@@ -167,6 +170,7 @@ export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignal
         mode,
         key: proofKey,
         required,
+        caps,
         fingerprints: () => p.fingerprints(),
         send: (m) => p.channel().send(JSON.stringify(m)),
         deliver: onData,
@@ -193,8 +197,10 @@ export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignal
         switch (msg.type) {
           case "created":
             isCreator = true;
-            if (first.type === "rejoin") setPhase("reconnecting"); // first back: wait quietly, the other side knows the secret
-            else {
+            if (first.type === "rejoin") {
+              setPhase("reconnecting"); // first back: wait quietly, the other side knows the secret
+              ev.listeners?.(msg.listeners ?? 0);
+            } else {
               setPhase("waiting");
               ev.invite(msg.token, inviteKey!);
             }
@@ -296,6 +302,20 @@ export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignal
       setPhase("reconnecting");
       scheduleRejoin(0);
     },
+    // Meet a saved device: roomId is where, ka is what both must prove they hold.
+    // resuming: files were restored after a restart, so this counts as a reconnect.
+    connectSaved(roomId: string, ka: Uint8Array, resuming = false) {
+      drop();
+      session = roomId; // no session message: both already know it
+      everOpened = resuming;
+      useInviteKey();
+      mode = "saved";
+      proofKey = Promise.resolve(ka);
+      required = true;
+      rejoining = true;
+      setPhase("reconnecting");
+      scheduleRejoin(0);
+    },
     leave,
     send,
     channel: () => peer!.channel(),
@@ -306,6 +326,9 @@ export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignal
     get session() { return session; },
     get inviteKey() { return required ? inviteKey : undefined; }, // a reload needs it to keep proving itself
     get verified() { return verified; },
+    get peerCaps() { return peerCaps; },
+    get role() { return isCreator ? ("offer" as const) : ("answer" as const); },
+    fingerprints: () => peer?.fingerprints() ?? null,
     get phase() { return phase; },
   };
 }

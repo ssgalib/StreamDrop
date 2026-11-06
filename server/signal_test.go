@@ -309,8 +309,8 @@ func TestRingBringsTheOtherDeviceIn(t *testing.T) {
 
 	caller := dial(t, srv.URL)
 	caller.send(`{"type":"rejoin","token":"` + idA + `"}`)
-	if m := caller.expect("created"); !m.Listening {
-		t.Fatal("caller should hear that a listener exists")
+	if m := caller.expect("created"); m.Listeners != 1 {
+		t.Fatalf("caller should hear of one listener, got %d", m.Listeners)
 	}
 	if m := listener.expect("ring"); m.Token != idA {
 		t.Fatalf("rang for %q", m.Token)
@@ -327,7 +327,7 @@ func TestListenRingsAtOnceWhenSomeoneIsWaiting(t *testing.T) {
 
 	caller := dial(t, srv.URL)
 	caller.send(`{"type":"rejoin","token":"` + idA + `"}`)
-	if m := caller.expect("created"); m.Listening {
+	if m := caller.expect("created"); m.Listeners != 0 {
 		t.Fatal("nobody is listening yet")
 	}
 	listener := dial(t, srv.URL)
@@ -348,7 +348,7 @@ func TestAClosedListenerIsForgotten(t *testing.T) {
 
 	caller := dial(t, srv.URL)
 	caller.send(`{"type":"rejoin","token":"` + idA + `"}`)
-	if m := caller.expect("created"); m.Listening {
+	if m := caller.expect("created"); m.Listeners != 0 {
 		t.Fatal("a closed socket still counts as listening")
 	}
 }

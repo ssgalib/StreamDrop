@@ -1,7 +1,8 @@
 import { parseInvite } from "./auth";
 import { createConnection, type Phase } from "./connection";
 import { createTransfers, type Item, type Saved } from "./transfers";
-import { chooseSink, cleanOpfs, discardParts, openParts, partsOffset } from "./sinks";
+import { app, appSinks, initApp, pathOf, type AppHooks } from "./app";
+import * as browserSinks from "./sinks";
 import { fingerprint, isId, parseMeta } from "./transfer";
 import { drawQr } from "./qr";
 import { fmtSize, fmtTime } from "./format";
@@ -9,6 +10,8 @@ import { initStored, openStoredLink } from "./stored";
 import { parseStoredLink } from "./store";
 import { flashCopied, setStatus, showError } from "./ui";
 import "./style.css";
+
+const { chooseSink, cleanOpfs, discardParts, openParts, partsOffset } = app ? appSinks(app) : browserSinks;
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const homeEl = $("#home");
@@ -44,27 +47,32 @@ type Record = { session: string; p?: string; items: Saved[]; at: number };
 const RECONNECT_WINDOW = 10 * 60_000;
 const GRACE = 5 * 60_000;
 
+// A killed app loses recent localStorage writes, so the app keeps this in a file instead.
+const recordStore = () => app?.record ?? localStorage;
+
 // What a reload needs to carry on: the shared secret, and the files that were moving. Written even when
 // nothing is moving, so a phone that kills the tab while you pick files can reconnect by itself.
 // Reads are wrapped and validated: storage can be blocked or edited.
 function saveRecords(items: Saved[]) {
   try {
-    if (conn.session) localStorage.setItem(RECORD_KEY, JSON.stringify({ session: conn.session, p: conn.inviteKey, items, at: Date.now() }));
+    if (conn.session) recordStore().setItem(RECORD_KEY, JSON.stringify({ session: hooks?.savedRoom() ?? conn.session, p: conn.inviteKey, items, at: Date.now() }));
   } catch { /* storage blocked: the pair just can't be rejoined after a reload */ }
 }
 
 function clearRecord() {
-  try { localStorage.removeItem(RECORD_KEY); } catch { /* ignore */ }
+  try { recordStore().removeItem(RECORD_KEY); } catch { /* ignore */ }
 }
 
 function loadRecords(): Record | null {
   try {
-    const raw = JSON.parse(localStorage.getItem(RECORD_KEY) ?? "null");
+    const raw = JSON.parse(recordStore().getItem(RECORD_KEY) ?? "null");
     if (!isId(raw?.session) || !Array.isArray(raw.items)) return null;
     const items: Saved[] = [];
     for (const r of raw.items.slice(0, 500)) {
       const m = parseMeta(r);
-      if (m && (r.dir === "send" || r.dir === "receive")) items.push({ id: m.id, dir: r.dir, name: m.name, size: m.size, type: m.type, fp: m.fp });
+      if (m && (r.dir === "send" || r.dir === "receive")) {
+        items.push({ id: m.id, dir: r.dir, name: m.name, size: m.size, type: m.type, fp: m.fp, ...(typeof r.path === "string" && { path: r.path }) });
+      }
     }
     return { session: raw.session, p: isId(raw.p) ? raw.p : undefined, items, at: Number.isFinite(raw.at) ? raw.at : 0 };
   } catch {
@@ -72,6 +80,7 @@ function loadRecords(): Record | null {
   }
 }
 
+let hooks: AppHooks | undefined; // only in the desktop app
 let giveUp: ReturnType<typeof setTimeout> | undefined;
 // Nothing is in progress and the other device is gone: wait a while (phones freeze tabs when you pick a file),
 // then stop. With files in progress we keep waiting, since they can carry on.
@@ -94,7 +103,7 @@ const conn = createConnection({
     }
   },
   invite(token, p) {
-    const link = `${location.origin}/#${token}.${p}`;
+    const link = `${app?.origin ?? location.origin}/#${token}.${p}`;
     $("#token").textContent = token;
     $<HTMLTextAreaElement>("#link").value = link;
     drawQr($<SVGSVGElement & HTMLElement>("#qr-code"), link);
@@ -115,8 +124,11 @@ const conn = createConnection({
     leaveBtn.hidden = false;
     showError("");
     transfers.onOpen(reconnected);
+    hooks?.opened(reconnected);
   },
-  message: (data) => void transfers.onMessage(data),
+  message(data) {
+    if (!hooks?.message(data)) void transfers.onMessage(data);
+  },
   low: () => transfers.onLow(),
   async lost() {
     await transfers.onLost(); // files that were moving pause with exact offsets
@@ -127,10 +139,12 @@ const conn = createConnection({
   session: () => transfers.persist(), // the pair can now be saved and rejoined
   error: connectionError,
   refused(text) {
+    hooks?.refused();
     if (sessionEl.hidden) connectionError(text);
     else ended(text);
   },
-});
+  listeners: (n) => hooks?.listeners(n),
+}, app?.signalUrl, app ? ["save"] : []);
 
 function connectionError(text: string) {
   showError(text);
@@ -147,18 +161,21 @@ const transfers = createTransfers({
   maxMessage: () => conn.maxMessage(),
   chooseSink,
   save: saveRecords,
+  pathOf: app && pathOf,
   changed: scheduleRender,
   warn: showError,
 });
 
 function setSessionState(s: "open" | "paused" | "ended") {
   sessionBar.dataset.state = s;
-  peerState.textContent = s === "open" ? "Connected to the other device" : s === "paused" ? "Reconnecting…" : "Disconnected";
+  const who = hooks?.peerName() ?? "the other device";
+  peerState.textContent = s === "open" ? `Connected to ${who}` : s === "paused" ? "Reconnecting…" : "Disconnected";
 }
 
 // The connection is over and nothing is left to finish. History stays visible.
 function ended(text: string) {
   clearTimeout(giveUp);
+  hooks?.ended();
   transfers.cancelAll();
   conn.leave();
   clearRecord();
@@ -173,6 +190,7 @@ function ended(text: string) {
 
 async function goHome() {
   clearTimeout(giveUp);
+  hooks?.ended();
   transfers.cancelAll();
   try { conn.send({ t: "bye", reason: "user" }); } catch { /* not connected */ } // so the other device doesn't wait for us
   await new Promise((r) => setTimeout(r, 150)); // let it leave before the connection closes
@@ -289,6 +307,7 @@ function render() {
   clearBtn.hidden = !items.some((i) => ["done", "declined", "cancelled", "failed"].includes(i.state));
   noteEl.hidden = !items.some((i) => i.state === "active" || i.state === "paused"); // only while files are moving
   keepAwake(transfers.activeCount() > 0);
+  hooks?.rendered(items);
 }
 
 // Keeps the screen on while files move, so the tab isn't suspended; a refusal is fine.
@@ -337,16 +356,15 @@ sessionEl.addEventListener("drop", (e) => {
   e.preventDefault();
   dropzone.classList.remove("is-over");
   const files: File[] = [];
-  let folders = 0;
+  const folders: File[] = [];
   for (const entry of [...(e.dataTransfer?.items ?? [])]) {
     if (entry.kind !== "file") continue;
-    if (entry.webkitGetAsEntry?.()?.isDirectory) folders++;
-    else {
-      const f = entry.getAsFile();
-      if (f) files.push(f);
-    }
+    const isFolder = entry.webkitGetAsEntry?.()?.isDirectory; // ask before getAsFile
+    const f = entry.getAsFile();
+    if (f) (isFolder ? folders : files).push(f);
   }
-  if (folders) showError("Folders can't be sent. Zip the folder first, then send the zip.");
+  if (folders.length && hooks) void hooks.sendFolders(folders);
+  else if (folders.length) showError("Folders can't be sent. Zip the folder first, then send the zip.");
   offerFiles(files);
 });
 
@@ -487,7 +505,12 @@ addEventListener("hashchange", () => location.reload());
 const stored = parseStoredLink(location.hash);
 const linkToken = location.hash.slice(1);
 view("home");
-if (stored) {
+if (app) {
+  hooks = await initApp(app, { conn, transfers, ended, offerFiles, showError, setStatus, setSessionState, view });
+}
+if (hooks && await hooks.resume(loadRecords())) {
+  armGiveUp();
+} else if (stored) {
   history.replaceState(null, "", location.pathname + location.search);
   void openStoredLink(stored);
 } else if (linkToken) {
@@ -499,7 +522,7 @@ if (stored) {
   conn.join(token, p);
 } else {
   const rec = loadRecords();
-  if (rec && !rec.items.length && Date.now() - rec.at < RECONNECT_WINDOW) {
+  if (!app && rec && !rec.items.length && Date.now() - rec.at < RECONNECT_WINDOW) {
     // The tab was killed or reloaded (a phone does this while you pick a file) with nothing in flight: rejoin.
     resumeSession = rec.session;
     rejoined = true;
@@ -507,7 +530,7 @@ if (stored) {
     armGiveUp();
   } else {
     void showUnfinished();
-    void initStored();
+    if (!app) void initStored(); // Stored mode lives on the website
   }
 }
 

@@ -72,6 +72,33 @@ this server or Cloudflare, fails that proof and the connection is closed ("Could
 A **typed code** carries no key, so it works but isn't verified. In a browser this has a limit: the server also
 delivers the page's code, so a malicious server could change that code. See `docs/protocol.md`.
 
+## Desktop app
+
+`desktop/` is an Electron app (Linux tested; Windows and macOS configured but never run). It bundles the same page,
+so the server can't change the code that handles your files. On top of the website it adds:
+
+- **Saved devices.** After connecting by link or QR, tap **Save** on both apps. From then on, either one can press
+  **Connect** with no link. The other app answers by itself if it is running, or as soon as it starts (up to 10 minutes).
+  A saved connection closes after 2 idle minutes and reconnects when needed.
+- Files go straight to a folder (default `Downloads/StreamDrop`), never overwrite anything, and a transfer survives
+  either app being killed: both finish by themselves after a restart.
+- **Send a folder** with its structure, no zip. Stays in the tray; optional start with the computer; notifications.
+- **Always accept** per saved device, off by default, up to 2 GiB, into a subfolder named after that device.
+
+Saving needs a real keyring. On Linux with none (no GNOME Keyring or KWallet), Electron's fallback is a hardcoded
+password, so the app refuses to save and only one-off connections work. Removing a device takes effect at once;
+for a lost device, remove it on every other device. There are no accounts and no automatic updates yet.
+
+The app talks to the live server, which must run this version first: older servers refuse its origin and `listen`.
+
+```bash
+cd desktop && npm install
+npm start               # builds the page and runs the app
+npm test                # file handling and hostile names
+npm run test:e2e        # real apps against a real Go server (windows stay hidden)
+npm run dist            # AppImage and .deb into desktop/dist
+```
+
 ## Local development
 
 Needs Go and Node.
@@ -203,9 +230,11 @@ Nothing needs backing up: the app has no database, and stored files are temporar
 server/            Go server (hub.go rooms and rejoin, signal.go handler and limits, store.go Stored mode, budget.go, loadtest/)
 web/src/           main.ts the page, connection.ts signaling + WebRTC + rejoin, auth.ts proving who the other device is,
                    transfers.ts the engine (every file, either direction), transfer.ts chunking, flow control and framing, sinks.ts storage, peer.ts WebRTC,
-                   qr.ts QR code, store.ts and stored.ts Stored mode
+                   qr.ts QR code, store.ts and stored.ts Stored mode,
+                   saved.ts saved connections and the listener, app.ts what only the desktop app does
 web/e2e/           Playwright tests: either-way transfers, resume (reloads, drops, server restart), Stored
 deploy/            nginx config, systemd unit, deploy and install scripts, optional coturn setup (install-turn.sh)
+desktop/           Electron app: main.js the shell, files.js everything touching disk, preload.js what the page may call
 docs/              protocol.md the wire protocol, vectors.json test vectors for any client
 plan.md, project-plan.md, plan_2.md, plan_3.md, track.md   plans and progress
 ```

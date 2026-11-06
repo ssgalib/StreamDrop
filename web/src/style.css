@@ -625,6 +625,12 @@ progress.is-frozen::-moz-progress-bar {
 }
 .bulk p { margin: 0; font-weight: 600; }
 
+/* SAVED DEVICES: desktop app only */
+.devices { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.device { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.device-name { flex: 1 1 8rem; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.device-always { display: flex; flex-basis: 100%; align-items: center; gap: var(--space-2); }
+
 /* ACTIVITY: one row per file, either direction */
 .activity { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
 #empty { display: none; }

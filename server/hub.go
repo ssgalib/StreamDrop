@@ -201,19 +201,18 @@ func (h *Hub) ringableLocked(p *Peer, id string) bool {
 	return true
 }
 
-// Ring returns who should be told that someone is waiting for id, and whether anyone listens at all.
+// Ring returns who should be told that someone is waiting for id, and how many sockets listen on it.
 // The caller's own device is usually among them, because both sides of a pair listen on the same id;
 // the server can't tell its sockets apart, so a client ignores a ring for a room it is already in.
-func (h *Hub) Ring(id string) (rung []*Peer, listening bool) {
+func (h *Hub) Ring(id string) (rung []*Peer, listeners int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, p := range h.byID[id] {
-		listening = true
 		if h.ringableLocked(p, id) {
 			rung = append(rung, p)
 		}
 	}
-	return rung, listening
+	return rung, len(h.byID[id])
 }
 
 func (h *Hub) Other(p *Peer) *Peer {

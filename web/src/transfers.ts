@@ -24,10 +24,11 @@ export type Item = {
   note: string; // why it ended, or what it needs
   needsClick: boolean; // receive: a save location needs a click
   batch?: Batch;
+  rel?: string;
 };
 
 // What a page reload needs to carry on with a file.
-export type Saved = { id: string; dir: Dir; name: string; size: number; type: string; fp: string };
+export type Saved = { id: string; dir: Dir; name: string; size: number; type: string; fp: string; path?: string };
 
 type Live = Item & {
   fp: string;
@@ -47,6 +48,7 @@ export type Env = {
   maxMessage(): number | undefined;
   chooseSink(meta: Meta): Promise<Sink>; // may throw AbortError, or SecurityError when it needs a click
   save(records: Saved[]): void; // persist what a reload could resume
+  pathOf?(file: File): string | undefined; // in the desktop app: lets it reopen a file by itself after a restart
   changed(): void; // something to redraw
   warn(text: string): void; // something the person should read
 };
@@ -63,16 +65,17 @@ export function createTransfers(env: Env) {
     try { env.send(msg); } catch { /* channel is gone: the connection reports it and everything pauses */ }
   };
   const metaMsg = (it: Live) => ({
-    t: "meta", id: it.id, name: it.name, size: it.size, type: it.type, fp: it.fp, ...(it.batch && { batch: it.batch }),
+    t: "meta", id: it.id, name: it.name, size: it.size, type: it.type, fp: it.fp, ...(it.batch && { batch: it.batch }), ...(it.rel && { rel: it.rel }),
   });
-  const metaOf = (it: Live): Meta => ({ id: it.id, name: it.name, size: it.size, type: it.type, fp: it.fp });
+  const metaOf = (it: Live): Meta => ({ id: it.id, name: it.name, size: it.size, type: it.type, fp: it.fp, ...(it.rel && { rel: it.rel }) });
 
   function persist() {
     const records: Saved[] = [];
     for (const it of items.values()) {
       const resumable = it.dir === "send" ? true : !!it.sink?.resumable;
       if (resumable && ["waiting", "active", "paused"].includes(it.state)) {
-        records.push({ id: it.id, dir: it.dir, name: it.name, size: it.size, type: it.type, fp: it.fp });
+        const path = it.file && env.pathOf?.(it.file);
+        records.push({ id: it.id, dir: it.dir, name: it.name, size: it.size, type: it.type, fp: it.fp, ...(path && { path }) });
       }
     }
     env.save(records);
@@ -159,14 +162,14 @@ export function createTransfers(env: Env) {
     activeCount: () => [...items.values()].filter((i) => i.state === "active").length,
 
     // Offer files to the other device. They show up at once and are announced as their fingerprints are ready.
-    async offer(files: File[]) {
+    async offer(files: (File & { rel?: string })[]) {
       if (files.length > MAX_FILES) return env.warn(`Pick at most ${MAX_FILES} files at a time.`);
       const batch = newTransferId();
       const made: [Live, File][] = [];
       files.forEach((file, i) => {
         const it = make({
           id: newTransferId(), dir: "send", name: file.name, size: file.size, type: file.type, state: "offered", fp: "",
-          batch: { id: batch, i, n: files.length },
+          batch: { id: batch, i, n: files.length }, ...(file.rel && { rel: file.rel }),
         });
         if (file.size > MAX_SIZE) finish(it, "failed", "Larger than the 20 GiB limit");
         else if (!file.name || file.name.length > 255) finish(it, "failed", "The file name is too long");

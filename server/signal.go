@@ -21,7 +21,7 @@ type Message struct {
 	Code       string          `json:"code,omitempty"`
 	ICEServers []ICEServer     `json:"iceServers,omitempty"`
 	IDs        []string        `json:"ids,omitempty"`       // listen
-	Listening  bool            `json:"listening,omitempty"` // created: the other device is reachable
+	Listeners  int             `json:"listeners,omitempty"` // created: sockets listening on this id, the caller's own included
 }
 
 const (
@@ -187,8 +187,8 @@ func handle(h *Hub, p *Peer, m Message, ice func() []ICEServer) {
 			return
 		}
 		if created {
-			rung, listening := h.Ring(m.Token)
-			send(p, Message{Type: "created", ExpiresAt: room.expiresAt, Listening: listening})
+			rung, listeners := h.Ring(m.Token)
+			send(p, Message{Type: "created", ExpiresAt: room.expiresAt, Listeners: listeners})
 			for _, l := range rung {
 				send(l, Message{Type: "ring", Token: m.Token})
 			}

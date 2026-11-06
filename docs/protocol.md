@@ -35,7 +35,7 @@ New:
 |---|---|
 | `listen{ids:[...]}` | Client to server. Up to 32 room ids, valid only on a socket that is not in a room. Replaces that socket's earlier list. **Both devices of a pair listen on the same id**, so the server keeps the latest 4 sockets per id and rings all of them (a dead socket can linger until its ping fails). If a room is already waiting for an id, the server rings at once. |
 | `ring{token}` | Server to listener: someone is waiting in this room. Reply by opening a **new** socket with `rejoin{token}`. Ignore it if busy, or already connected to or calling that device: the server can't tell a device's sockets apart, so a caller is usually rung for its own room. At most one ring per id per listening socket every 5 s. |
-| `created{..., listening:true}` | Added to the reply to `rejoin` when a listener exists, so the caller can show "Connecting" rather than "Open StreamDrop on the other device". |
+| `created{..., listeners:n}` | Added to the reply to `rejoin`: how many sockets listen on that id, the caller's own included. So a caller that listens too compares with 1, to show "Connecting" rather than "Open StreamDrop on the other device". |
 
 Server changes, and nothing else:
 - `OriginPatterns` for `app://streamdrop`.
@@ -62,6 +62,7 @@ As soon as the channel opens, a v2 client sends:
 
 - `v` is the version it speaks; `min` is the oldest it accepts.
 - `caps` lists what this device can do on **this** connection: `pair` only if it holds the invite key, `saved` only if it holds the pair's key. Authentication runs when both list the same one.
+- `save` means it can keep a saved connection. Save is only offered when both devices list it, so never to a browser.
 - The channel is ordered, so any other first message from the peer also means a v1 peer, at once.
 - No `hello` within 3 s means a v1 peer. That is allowed only for ad hoc connections, and the existing `session` step applies.
 - A proof is **required** on a saved connection, by a device that opened a link carrying `P` (the inviter must hold it too), and on every reconnect after a verified connection. There a missing `hello`, a missing cap or a failed proof ends the attempt. Otherwise a side could be downgraded by someone in the middle.
