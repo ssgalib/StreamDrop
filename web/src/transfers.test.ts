@@ -330,13 +330,38 @@ test("nonsense from the other side is ignored or refused, never trusted", async 
 
 test("too many unanswered offers are refused", async () => {
   const { a, b } = connect();
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 500; i++) {
     await b.engine.onMessage(JSON.stringify({ t: "meta", id: newTransferId(), name: `f${i}`, size: 1, type: "a/b", fp: "a".repeat(64) }));
   }
-  assert.equal(b.engine.items().length, 100);
+  assert.equal(b.engine.items().length, 500);
   await b.engine.onMessage(JSON.stringify({ t: "meta", id: newTransferId(), name: "one-too-many", size: 1, type: "a/b", fp: "a".repeat(64) }));
-  assert.equal(b.engine.items().length, 100);
+  assert.equal(b.engine.items().length, 500);
   assert.equal(a.engine.items().length, 0);
+});
+
+test("a batch of 500 reaches the other device, at most 100 unanswered at a time", async () => {
+  const { a, b } = connect();
+  await a.engine.offer(Array.from({ length: 500 }, (_, i) => file(`f${i}.bin`, 1)));
+  await until(() => b.engine.items().length === 100, "first hundred");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(b.engine.items().length, 100, "old pages refuse more than this");
+  await b.engine.acceptAll();
+  await until(() => b.engine.items().length === 500 && b.engine.items().every((i) => i.state === "done"), "all 500");
+  assert.ok(a.engine.items().every((i) => i.state === "done"));
+});
+
+test("a file that arrived but whose saved message was lost still ends as sent", async () => {
+  const { a, b } = connect();
+  await a.engine.offer([file("lost-saved.bin", 1000)]);
+  await until(() => b.engine.items().length === 1, "offered");
+  await b.engine.accept(b.engine.items()[0].id);
+  await until(() => byName(b, "lost-saved.bin").state === "done", "received");
+  // the sender never heard: put it back where a drop would have left it
+  const it = a.engine.items()[0];
+  it.state = "paused";
+  a.engine.onOpen(true);
+  await until(() => byName(a, "lost-saved.bin").state === "done", "reported as sent");
+  assert.equal(byName(a, "lost-saved.bin").note, "");
 });
 
 test("oversized or oddly named files are refused locally and never announced", async () => {

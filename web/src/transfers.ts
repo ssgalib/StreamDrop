@@ -31,6 +31,7 @@ export type Saved = { id: string; dir: Dir; name: string; size: number; type: st
 
 type Live = Item & {
   fp: string;
+  announced?: boolean; // the other device has been told about this file
   file?: File;
   sender?: ReturnType<typeof createSender>;
   receiver?: ReturnType<typeof createReceiver>;
@@ -50,7 +51,8 @@ export type Env = {
   warn(text: string): void; // something the person should read
 };
 
-const MAX_PENDING = 100;
+const MAX_PENDING = MAX_FILES;
+const MAX_UNANSWERED = 100; // pages from before version 2 refuse offers past this many
 
 export function createTransfers(env: Env) {
   const items = new Map<string, Live>();
@@ -98,6 +100,19 @@ export function createTransfers(env: Env) {
     env.changed();
   }
 
+  // Tells the other device about the next files, keeping at most MAX_UNANSWERED waiting for an answer.
+  function announce() {
+    const offered = [...items.values()].filter((i) => i.dir === "send" && i.state === "offered");
+    let open = offered.filter((i) => i.announced).length;
+    for (const it of offered) {
+      if (open >= MAX_UNANSWERED) return;
+      if (it.announced || !it.fp) continue;
+      it.announced = true;
+      say(metaMsg(it));
+      open++;
+    }
+  }
+
   // One outgoing file streams at a time; the rest wait their turn. Incoming files can arrive meanwhile.
   function pump() {
     if ([...items.values()].some((i) => i.dir === "send" && i.state === "active")) return;
@@ -125,6 +140,7 @@ export function createTransfers(env: Env) {
     it.sink = undefined;
     it.file = state === "done" ? it.file : undefined;
     changed();
+    announce();
     pump();
   }
 
@@ -164,7 +180,7 @@ export function createTransfers(env: Env) {
         const fp = await fingerprint(file);
         if (it.state !== "offered") continue; // cancelled while hashing
         it.fp = fp;
-        say(metaMsg(it));
+        announce();
       }
     },
 
@@ -265,7 +281,7 @@ export function createTransfers(env: Env) {
       for (const it of items.values()) {
         if (it.dir === "send") {
           if (it.state === "paused") say({ t: "resume", id: it.id, fp: it.fp });
-          else if (it.state === "offered" && it.fp) say(metaMsg(it));
+          else if (it.state === "offered" && it.announced) say(metaMsg(it));
         } else if (it.state === "waiting") say({ t: "accept", id: it.id });
       }
     },
@@ -288,6 +304,7 @@ export function createTransfers(env: Env) {
           if (it?.dir === "send" && it.state === "offered") {
             it.state = "waiting";
             changed();
+            announce();
             pump();
           }
           return;
@@ -311,7 +328,7 @@ export function createTransfers(env: Env) {
           }
           return;
         case "saved":
-          if (it?.dir === "send" && it.state === "active") finish(it, "done");
+          if (it?.dir === "send" && (it.state === "active" || it.state === "paused")) finish(it, "done");
           return;
         case "cancel":
           if (it && unfinished(it)) finish(it, "cancelled", "The other device cancelled it");
@@ -361,6 +378,8 @@ export function createTransfers(env: Env) {
   async function onResume(msg: any) {
     const it = typeof msg?.id === "string" ? items.get(msg.id) : undefined;
     const r = parseResume(msg);
+    // It arrived, but the "saved" that said so was lost in the drop.
+    if (it?.dir === "receive" && it.state === "done" && r?.fp === it.fp) return say({ t: "saved", id: it.id });
     // The sender came back. We can only continue what we kept, and only for the same file.
     if (!it || it.dir !== "receive" || !it.sink || !r || r.fp !== it.fp || !["paused", "waiting", "active"].includes(it.state)) {
       say({ t: "reject", id: typeof msg?.id === "string" ? msg.id : undefined, reason: "unknown" });

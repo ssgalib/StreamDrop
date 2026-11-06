@@ -298,3 +298,117 @@ func TestRejoinCannotReachInviteRoom(t *testing.T) {
 	a.send(`{"type":"offer","sdp":"x"}`)
 	a.expectError("not-paired")
 }
+
+func TestRingBringsTheOtherDeviceIn(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+
+	listener := dial(t, srv.URL)
+	listener.send(`{"type":"listen","ids":["` + idA + `"]}`)
+	time.Sleep(50 * time.Millisecond) // listen sends no reply
+
+	caller := dial(t, srv.URL)
+	caller.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	if m := caller.expect("created"); !m.Listening {
+		t.Fatal("caller should hear that a listener exists")
+	}
+	if m := listener.expect("ring"); m.Token != idA {
+		t.Fatalf("rang for %q", m.Token)
+	}
+	answer := dial(t, srv.URL)
+	answer.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	answer.expect("joined")
+	caller.expect("peer-joined")
+}
+
+func TestListenRingsAtOnceWhenSomeoneIsWaiting(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+
+	caller := dial(t, srv.URL)
+	caller.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	if m := caller.expect("created"); m.Listening {
+		t.Fatal("nobody is listening yet")
+	}
+	listener := dial(t, srv.URL)
+	listener.send(`{"type":"listen","ids":["` + idA + `"]}`)
+	listener.expect("ring")
+}
+
+func TestAClosedListenerIsForgotten(t *testing.T) {
+	h := NewHub()
+	srv := httptest.NewServer(newHandler(h, nil))
+	defer srv.Close()
+
+	listener := dial(t, srv.URL)
+	listener.send(`{"type":"listen","ids":["` + idA + `"]}`)
+	time.Sleep(50 * time.Millisecond)
+	listener.c.CloseNow()
+	time.Sleep(50 * time.Millisecond)
+
+	caller := dial(t, srv.URL)
+	caller.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	if m := caller.expect("created"); m.Listening {
+		t.Fatal("a closed socket still counts as listening")
+	}
+}
+
+func TestPingClosesAGhostSoItCantHoldARoom(t *testing.T) {
+	defer func(i, o time.Duration) { pingInterval, pingTimeout = i, o }(pingInterval, pingTimeout)
+	pingInterval, pingTimeout = 30*time.Millisecond, 30*time.Millisecond
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+
+	// A ghost: it joined a room, then stopped reading, so it never answers a ping.
+	ghost := dial(t, srv.URL)
+	ghost.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	time.Sleep(300 * time.Millisecond)
+
+	arrival := dial(t, srv.URL)
+	arrival.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	arrival.expect("created") // a new room, not the ghost's
+}
+
+func TestPingKeepsALiveIdleSocket(t *testing.T) {
+	defer func(i, o time.Duration) { pingInterval, pingTimeout = i, o }(pingInterval, pingTimeout)
+	pingInterval, pingTimeout = 20*time.Millisecond, 200*time.Millisecond
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+
+	c := dial(t, srv.URL)
+	c.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	c.expect("created")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.c.Read(ctx) // reading is what answers pings
+	time.Sleep(200 * time.Millisecond)
+
+	other := dial(t, srv.URL)
+	other.send(`{"type":"rejoin","token":"` + idA + `"}`)
+	other.expect("joined")
+}
+
+func TestOrigins(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	tests := []struct {
+		origin string
+		ok     bool
+	}{
+		{"", true},                    // native apps send none
+		{"app://streamdrop", true},    // the desktop app's bundled page
+		{"https://streamdrop", false}, // same host name, but a website
+		{"https://evil.example", false},
+		{"app://evil", false},
+	}
+	for _, tc := range tests {
+		c, _, err := websocket.Dial(context.Background(), url, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": {tc.origin}}})
+		if (err == nil) != tc.ok {
+			t.Errorf("origin %q: err %v, want ok=%v", tc.origin, err, tc.ok)
+		}
+		if err == nil {
+			c.CloseNow()
+		}
+	}
+}

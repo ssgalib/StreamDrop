@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -21,17 +20,24 @@ type Message struct {
 	Candidate  json.RawMessage `json:"candidate,omitempty"` // passed through unread
 	Code       string          `json:"code,omitempty"`
 	ICEServers []ICEServer     `json:"iceServers,omitempty"`
+	IDs        []string        `json:"ids,omitempty"`       // listen
+	Listening  bool            `json:"listening,omitempty"` // created: the other device is reachable
 }
-
-var errBadMessage = errors.New("bad-message")
 
 const (
 	maxConnsPerIP = 10
 	maxMessages   = 256
 )
 
-// A variable so tests can shorten it.
-var firstMessageTimeout = 15 * time.Second
+// Variables so tests can shorten them.
+var (
+	firstMessageTimeout = 15 * time.Second
+	pingInterval        = 45 * time.Second // under the ~100 s a proxy may allow an idle WebSocket
+	pingTimeout         = 15 * time.Second
+)
+
+// The desktop app's bundled page. Browsers set Origin themselves, so no website can claim it.
+var appOrigins = []string{"app://streamdrop"}
 
 type ipLimiter struct {
 	mu sync.Mutex
@@ -86,7 +92,7 @@ func validateSignal(m Message, isCreator bool) error {
 // ice supplies relay servers for a freshly paired room; nil means none.
 func newHandler(h *Hub, ice func() []ICEServer) http.HandlerFunc {
 	limiter := &ipLimiter{n: map[string]int{}}
-	firstTimeout := firstMessageTimeout // read once: tests change the variable between handlers
+	firstTimeout, interval, timeout := firstMessageTimeout, pingInterval, pingTimeout // read once: tests change the variables between handlers
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
 		if !limiter.acquire(ip) {
@@ -96,11 +102,15 @@ func newHandler(h *Hub, ice func() []ICEServer) http.HandlerFunc {
 		defer limiter.release(ip)
 
 		// Accept rejects other sites' pages, because Origin must match Host.
-		conn, err := websocket.Accept(w, r, nil)
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: appOrigins})
 		if err != nil {
 			return
 		}
 		defer conn.CloseNow()
+
+		pingCtx, stopPing := context.WithCancel(r.Context())
+		defer stopPing()
+		go keepAlive(pingCtx, conn, interval, timeout)
 
 		p := &Peer{conn: conn}
 		defer func() {
@@ -134,6 +144,27 @@ func newHandler(h *Hub, ice func() []ICEServer) http.HandlerFunc {
 	}
 }
 
+// keepAlive closes a socket whose device has vanished (a phone changing network sends no close), so it
+// can't sit in a room as a ghost that a new arrival "joins". The traffic also keeps idle sockets open through proxies.
+func keepAlive(ctx context.Context, conn *websocket.Conn, interval, timeout time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := conn.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			conn.CloseNow()
+			return
+		}
+	}
+}
+
 func handle(h *Hub, p *Peer, m Message, ice func() []ICEServer) {
 	switch m.Type {
 	case "create":
@@ -156,10 +187,23 @@ func handle(h *Hub, p *Peer, m Message, ice func() []ICEServer) {
 			return
 		}
 		if created {
-			send(p, Message{Type: "created", ExpiresAt: room.expiresAt})
+			rung, listening := h.Ring(m.Token)
+			send(p, Message{Type: "created", ExpiresAt: room.expiresAt, Listening: listening})
+			for _, l := range rung {
+				send(l, Message{Type: "ring", Token: m.Token})
+			}
 			return
 		}
 		announcePaired(h, p, ice)
+	case "listen":
+		waiting, err := h.Listen(m.IDs, p)
+		if err != nil {
+			sendError(p, err.Error())
+			return
+		}
+		for _, id := range waiting {
+			send(p, Message{Type: "ring", Token: id})
+		}
 	case "offer", "answer", "candidate":
 		// p.isCreator is only written by Create before the handler loop continues, so this read is safe.
 		if validateSignal(m, p.isCreator) != nil {

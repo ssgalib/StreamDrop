@@ -232,3 +232,16 @@ Chosen with the user: pair by link, QR or code (no same-network discovery, for p
 - Trying to send while reconnecting shows "Not connected right now. Wait for it to reconnect, then try again."
 - New e2e tests: idle drop reconnects and sending still works; killed and reopened tab rejoins; Disconnect understood at once and not rejoined after a reload; abandoned wait ends after 5 minutes (fake clock). 29 e2e, 45 unit and the Go tests pass.
 - Not verified on a real phone: the exact moment each Android browser freezes the tab and whether its connection survives a short file pick. The behaviour above does not depend on that, but confirm it by picking a file from the Files app on your phone.
+
+# plan_3.md M0: foundation (built and tested locally, NOT deployed)
+- [x] Bugs: `MAX_PENDING` is now 500; a sender keeps at most 100 offers unanswered, so old pages still work. A finished file whose `saved` was lost now ends as Sent (the receiver answers `resume` with `saved`).
+- [x] Server: `OriginPatterns` for `app://streamdrop`; ping every 45 s, closing dead sockets; `listen`/`ring`, in memory only, 2000 sockets, 32 ids each.
+- [x] Web: `web/src/auth.ts` (gate, HKDF/HMAC, fingerprints), invite key `P` after `#`, `hello`, proofs on every connection and reconnect, `createConnection` takes a signaling URL.
+- [x] `docs/protocol.md`, `docs/vectors.json` (made independently with Python's standard library).
+- Two fixes to the plan, now in the spec:
+  - It said the latest `listen` replaces the old one, but both devices of a pair use the same id, so one would knock the other out and a device could ring itself. The server keeps 4 sockets per id and rings them all; clients ignore a ring for their own room. The 5 s limit is per socket, or a device arriving just after another was rung would never hear.
+  - Section 2.6 let a failed proof fall back to "Temporary", against 2.5. A failed proof now always closes, and a link holder demands the proof, or someone in the middle could force the downgrade.
+- `caps` now says what a device can do on this connection, not in general. `rel` is not a cap: old receivers ignore it, so it needs no negotiation.
+- Tests: Go `-race -count=3`; 67 unit; e2e adds a wrong key, a tampered fingerprint, `P` absent from every WebSocket frame, a typed code, proofs after a drop and after reloads, a failed proof on reconnect. New pages against a real build of 9967382 pass both ways (`OLD_DIST=... npm run test:e2e -- oldpage`).
+- Not done from M0: deploying, and the Cloudflare idle test (does a ping every 45 s keep a socket open through the Tunnel?). Both need the live host.
+- Limit: a 500-file batch shows on the other device 100 at a time, as answers come in.

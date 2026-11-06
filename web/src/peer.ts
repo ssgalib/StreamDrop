@@ -1,3 +1,4 @@
+import { sdpFingerprint, type Fingerprints } from "./auth";
 import { LOW_WATER } from "./transfer";
 
 export type Signal =
@@ -85,6 +86,12 @@ export function createPeer(initiator: boolean, relayServers: RTCIceServer[], han
     },
     channel: () => channel!,
     maxMessageSize: () => pc.sctp?.maxMessageSize,
+    // Offerer's first. What this connection really checks, so it is what the proof must cover.
+    fingerprints(): Fingerprints | null {
+      const local = sdpFingerprint(pc.localDescription?.sdp), remote = sdpFingerprint(pc.remoteDescription?.sdp);
+      if (!local || !remote) return null;
+      return initiator ? { fo: local, fa: remote } : { fo: remote, fa: local };
+    },
     close() {
       dead = true;
       pc.close();

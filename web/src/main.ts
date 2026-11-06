@@ -1,3 +1,4 @@
+import { parseInvite } from "./auth";
 import { createConnection, type Phase } from "./connection";
 import { createTransfers, type Item, type Saved } from "./transfers";
 import { chooseSink, cleanOpfs, discardParts, openParts, partsOffset } from "./sinks";
@@ -36,7 +37,7 @@ function view(v: View) {
 // ---------------------------------------------------------------- connection and transfers
 
 const RECORD_KEY = "streamdrop-session";
-type Record = { session: string; items: Saved[]; at: number };
+type Record = { session: string; p?: string; items: Saved[]; at: number };
 
 // How long a pair is remembered for an automatic rejoin when the page was killed or reloaded, and how long
 // a device waits for the other to come back before giving up (when no file is in progress).
@@ -48,7 +49,7 @@ const GRACE = 5 * 60_000;
 // Reads are wrapped and validated: storage can be blocked or edited.
 function saveRecords(items: Saved[]) {
   try {
-    if (conn.session) localStorage.setItem(RECORD_KEY, JSON.stringify({ session: conn.session, items, at: Date.now() }));
+    if (conn.session) localStorage.setItem(RECORD_KEY, JSON.stringify({ session: conn.session, p: conn.inviteKey, items, at: Date.now() }));
   } catch { /* storage blocked: the pair just can't be rejoined after a reload */ }
 }
 
@@ -65,7 +66,7 @@ function loadRecords(): Record | null {
       const m = parseMeta(r);
       if (m && (r.dir === "send" || r.dir === "receive")) items.push({ id: m.id, dir: r.dir, name: m.name, size: m.size, type: m.type, fp: m.fp });
     }
-    return { session: raw.session, items, at: Number.isFinite(raw.at) ? raw.at : 0 };
+    return { session: raw.session, p: isId(raw.p) ? raw.p : undefined, items, at: Number.isFinite(raw.at) ? raw.at : 0 };
   } catch {
     return null;
   }
@@ -92,8 +93,8 @@ const conn = createConnection({
       case "idle": setStatus(""); break;
     }
   },
-  invite(token) {
-    const link = `${location.origin}/#${token}`;
+  invite(token, p) {
+    const link = `${location.origin}/#${token}.${p}`;
     $("#token").textContent = token;
     $<HTMLTextAreaElement>("#link").value = link;
     drawQr($<SVGSVGElement & HTMLElement>("#qr-code"), link);
@@ -108,6 +109,7 @@ const conn = createConnection({
   },
   open(reconnected) {
     clearTimeout(giveUp);
+    sessionEl.dataset.verified = String(conn.verified);
     endedEl.hidden = true;
     dropzone.hidden = false;
     leaveBtn.hidden = false;
@@ -123,14 +125,20 @@ const conn = createConnection({
   },
   bye: () => ended("The other device disconnected."), // it left on purpose: no reason to wait
   session: () => transfers.persist(), // the pair can now be saved and rejoined
-  error(text) {
-    showError(text);
-    // a failed pairing or join goes back to the start; an open session stays as it is
-    if (!sessionEl.hidden) return;
-    conn.leave();
-    view("home");
+  error: connectionError,
+  refused(text) {
+    if (sessionEl.hidden) connectionError(text);
+    else ended(text);
   },
 });
+
+function connectionError(text: string) {
+  showError(text);
+  // a failed pairing or join goes back to the start; an open session stays as it is
+  if (!sessionEl.hidden) return;
+  conn.leave();
+  view("home");
+}
 
 const transfers = createTransfers({
   send: (m) => conn.send(m),
@@ -166,7 +174,7 @@ function ended(text: string) {
 async function goHome() {
   clearTimeout(giveUp);
   transfers.cancelAll();
-  try { conn.send({ t: "bye" }); } catch { /* not connected */ } // so the other device doesn't wait for us
+  try { conn.send({ t: "bye", reason: "user" }); } catch { /* not connected */ } // so the other device doesn't wait for us
   await new Promise((r) => setTimeout(r, 150)); // let it leave before the connection closes
   conn.leave();
   clearRecord();
@@ -369,7 +377,8 @@ $("#join-form").addEventListener("submit", (e) => {
   showError("");
   view("none");
   setStatus("Connecting");
-  conn.join($<HTMLInputElement>("#token-input").value.trim());
+  const { token, p } = parseInvite($<HTMLInputElement>("#token-input").value);
+  conn.join(token, p);
 });
 
 $("#accept-all").addEventListener("click", () => void transfers.acceptAll());
@@ -385,6 +394,7 @@ const unfinishedEl = $("#unfinished");
 const resumeBtn = $("#resume");
 const resumeFiles = $<HTMLInputElement>("#resume-files");
 let resumeSession: string | undefined;
+let resumeKey: string | undefined;
 let pendingSends: Saved[] = [];
 let rejoined = false;
 
@@ -392,6 +402,7 @@ async function showUnfinished() {
   const rec = loadRecords();
   if (!rec || !rec.items.length) return;
   resumeSession = rec.session;
+  resumeKey = rec.p;
   pendingSends = rec.items.filter((i) => i.dir === "send");
   const receives = rec.items.filter((i) => i.dir === "receive");
   const list = $("#unfinished-list");
@@ -414,7 +425,7 @@ async function showUnfinished() {
 function startRejoin() {
   if (rejoined || !resumeSession) return;
   rejoined = true;
-  conn.rejoin(resumeSession); // shows the connected screen as "Reconnecting…"
+  conn.rejoin(resumeSession, resumeKey); // shows the connected screen as "Reconnecting…"
 }
 
 resumeBtn.addEventListener("click", async () => {
@@ -481,17 +492,18 @@ if (stored) {
   void openStoredLink(stored);
 } else if (linkToken) {
   history.replaceState(null, "", location.pathname + location.search);
-  $<HTMLInputElement>("#token-input").value = linkToken;
+  const { token, p } = parseInvite(linkToken);
+  $<HTMLInputElement>("#token-input").value = token;
   view("none");
   setStatus("Connecting");
-  conn.join(linkToken);
+  conn.join(token, p);
 } else {
   const rec = loadRecords();
   if (rec && !rec.items.length && Date.now() - rec.at < RECONNECT_WINDOW) {
     // The tab was killed or reloaded (a phone does this while you pick a file) with nothing in flight: rejoin.
     resumeSession = rec.session;
     rejoined = true;
-    conn.rejoin(rec.session);
+    conn.rejoin(rec.session, rec.p);
     armGiveUp();
   } else {
     void showUnfinished();

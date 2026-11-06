@@ -1,22 +1,25 @@
+import { createGate, pairProofKey, type Gate, type Mode } from "./auth";
 import { createPeer, type Signal } from "./peer";
 import { newTransferId } from "./transfer";
 
 // One device-to-device connection: the signaling socket, the WebRTC peer, and getting back together after
 // a drop. No page code. Once connected, the two devices share a secret `session` (sent over the encrypted
 // DataChannel) that only they know; rejoining uses it, so nobody else can slip into a reconnecting pair.
+// The server does see that secret when rejoining, so a connection is only verified by the gate in auth.ts.
 export type Phase = "idle" | "waiting" | "connecting" | "open" | "reconnecting";
 
 export type ConnectionEvents = {
   phase(p: Phase): void;
-  invite(token: string): void; // our room is ready: this is what to share
+  invite(token: string, p: string): void; // our room is ready: this is what to share
   inviteExpired(): void; // nobody joined in time
-  open(reconnected: boolean): void; // the DataChannel is open
+  open(reconnected: boolean): void; // the DataChannel is open and the gate has passed
   message(data: string | ArrayBuffer): void;
   low(): void; // the send buffer drained
   lost(): void; // an open connection dropped; the app decides: rejoin() or leave()
   bye(): void; // the other device disconnected on purpose: don't wait for it
   session(id: string): void; // the shared secret is known, so the pair can be saved and rejoined later
   error(text: string): void;
+  refused(text: string): void; // the other device couldn't be verified, or is too old: the connection is over
 };
 
 const errorText: Record<string, string> = {
@@ -29,9 +32,16 @@ const errorText: Record<string, string> = {
   "server-busy": "The server is busy. Try again later.",
 };
 
+const refusedText = {
+  auth: "Couldn't verify the other device, so the connection was closed.",
+  upgrade: "Update StreamDrop on the other device.",
+};
+
 const SESSION_RE = /^[A-Z2-7]{26}$/;
 
-export function createConnection(ev: ConnectionEvents) {
+const defaultSignalUrl = () => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+
+export function createConnection(ev: ConnectionEvents, signalUrl = defaultSignalUrl()) {
   let ws: WebSocket | undefined;
   let peer: ReturnType<typeof createPeer> | undefined;
   let phase: Phase = "idle";
@@ -41,6 +51,27 @@ export function createConnection(ev: ConnectionEvents) {
   let rejoining = false;
   let expired = false; // our waiting room timed out and the server closed the socket on purpose
   let retry: ReturnType<typeof setTimeout> | undefined;
+  let gate: Gate | undefined; // set from the moment the DataChannel opens
+  let mode: Mode = "pair";
+  let inviteKey: string | undefined; // P: the key in the invite link, which the server never sees
+  let proofKey: Promise<Uint8Array> | undefined;
+  let required = false; // the other device must prove itself, or the connection is refused
+  let verified = false;
+
+  function useInviteKey(p?: string) {
+    mode = "pair";
+    inviteKey = p;
+    proofKey = p ? pairProofKey(p) : undefined;
+    required = false;
+    verified = false;
+  }
+
+  function closePeer() {
+    gate?.close();
+    gate = undefined;
+    peer?.close(); // marks it dead, so its late events are ignored
+    peer = undefined;
+  }
 
   const setPhase = (p: Phase) => {
     phase = p;
@@ -52,8 +83,7 @@ export function createConnection(ev: ConnectionEvents) {
     if (ws) ws.onmessage = ws.onclose = ws.onerror = null;
     ws?.close();
     ws = undefined;
-    peer?.close(); // marks it dead, so its late events are ignored
-    peer = undefined;
+    closePeer();
     opened = false;
   }
 
@@ -68,13 +98,11 @@ export function createConnection(ev: ConnectionEvents) {
   function peerLost(failed: boolean) {
     if (opened) {
       opened = false;
-      peer?.close();
-      peer = undefined;
+      closePeer();
       ev.lost();
     } else if (rejoining) {
       // the new connection failed before it opened: start over after a moment
-      peer?.close();
-      peer = undefined;
+      closePeer();
       scheduleRejoin(2000);
     } else if (failed) {
       leave();
@@ -82,43 +110,73 @@ export function createConnection(ev: ConnectionEvents) {
     }
   }
 
+  // The channel is open and the other device is who it should be, as far as this connection can tell.
+  function ready(isVerified: boolean) {
+    opened = true;
+    verified = isVerified;
+    if (isVerified) required = true; // from now on, every reconnect must prove itself too
+    else proofKey = inviteKey = undefined;
+    clearTimeout(retry);
+    const reconnected = everOpened;
+    everOpened = true;
+    rejoining = false;
+    // The first connection settles a shared secret, over the encrypted channel, for getting back together.
+    if (!session && !reconnected && peer && isCreator) {
+      session = newTransferId();
+      send({ t: "session", id: session });
+      ev.session(session);
+    }
+    setPhase("open");
+    ev.open(reconnected);
+  }
+
+  function refuse(reason: "auth" | "upgrade") {
+    leave();
+    ev.refused(refusedText[reason]);
+  }
+
+  function onData(data: string | ArrayBuffer) {
+    if (typeof data === "string" && data.startsWith('{"t":"')) {
+      try {
+        const m = JSON.parse(data);
+        if (m.t === "session") {
+          if (!session && typeof m.id === "string" && SESSION_RE.test(m.id)) {
+            session = m.id as string;
+            ev.session(m.id);
+          }
+          return;
+        }
+        if (m.t === "bye") {
+          if (m.reason === "auth" || m.reason === "upgrade") return refuse(m.reason);
+          return ev.bye();
+        }
+      } catch { /* not ours: pass it on */ }
+    }
+    ev.message(data);
+  }
+
   const peerEvents = {
     signal: (s: Signal) => ws?.send(JSON.stringify(s)),
     state(text: string) {
-      if (text === "failed" || text === "disconnected") peerLost(text === "failed");
+      if (text === "failed" || text === "disconnected") peerLost(text === "failed" || (!!gate && !opened));
     },
     open() {
-      opened = true;
-      clearTimeout(retry);
-      const reconnected = everOpened;
-      everOpened = true;
-      rejoining = false;
-      // The first connection settles a shared secret, over the encrypted channel, for getting back together.
-      if (!session && !reconnected && peer && isCreator) {
-        session = newTransferId();
-        send({ t: "session", id: session });
-        ev.session(session);
-      }
-      setPhase("open");
-      ev.open(reconnected);
+      const p = peer!;
+      gate = createGate({
+        role: isCreator ? "offer" : "answer",
+        mode,
+        key: proofKey,
+        required,
+        fingerprints: () => p.fingerprints(),
+        send: (m) => p.channel().send(JSON.stringify(m)),
+        deliver: onData,
+        passed: ready,
+        failed: refuse,
+      });
+      gate.start();
     },
-    closed: () => peerLost(false),
-    message(data: string | ArrayBuffer) {
-      if (typeof data === "string" && data.startsWith('{"t":"')) {
-        try {
-          const m = JSON.parse(data);
-          if (m.t === "session") {
-            if (!session && typeof m.id === "string" && SESSION_RE.test(m.id)) {
-              session = m.id as string;
-              ev.session(m.id);
-            }
-            return;
-          }
-          if (m.t === "bye") return ev.bye();
-        } catch { /* not ours: pass it on */ }
-      }
-      ev.message(data);
-    },
+    closed: () => peerLost(!!gate && !opened), // closed while proving itself: a failed attempt, not a drop
+    message: (data: string | ArrayBuffer) => gate?.message(data),
     low: () => ev.low(),
   };
 
@@ -127,8 +185,7 @@ export function createConnection(ev: ConnectionEvents) {
   function openSocket(first: { type: string; token?: string }) {
     drop();
     expired = false;
-    const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
-    const socket = (ws = new WebSocket(url));
+    const socket = (ws = new WebSocket(signalUrl));
     socket.onopen = () => socket.send(JSON.stringify(first));
     socket.onmessage = async (e) => {
       const msg = JSON.parse(e.data);
@@ -139,7 +196,7 @@ export function createConnection(ev: ConnectionEvents) {
             if (first.type === "rejoin") setPhase("reconnecting"); // first back: wait quietly, the other side knows the secret
             else {
               setPhase("waiting");
-              ev.invite(msg.token);
+              ev.invite(msg.token, inviteKey!);
             }
             break;
           case "joined":
@@ -161,8 +218,7 @@ export function createConnection(ev: ConnectionEvents) {
             if (opened) break; // the direct connection reports its own failure
             if (rejoining) {
               // the other side dropped again before the connection opened: wait for it in a fresh room
-              peer?.close();
-              peer = undefined;
+              closePeer();
               scheduleRejoin(1000);
             } else if (!everOpened) {
               leave();
@@ -206,6 +262,7 @@ export function createConnection(ev: ConnectionEvents) {
     rejoining = false;
     session = undefined;
     everOpened = false;
+    useInviteKey();
     setPhase("idle");
   }
 
@@ -214,19 +271,25 @@ export function createConnection(ev: ConnectionEvents) {
       rejoining = false;
       session = undefined;
       everOpened = false;
+      useInviteKey(newTransferId());
       openSocket({ type: "create" });
     },
-    join(token: string) {
+    // p came with the link, so the device that made it holds it too: a connection without its proof is an attack.
+    join(token: string, p?: string) {
       rejoining = false;
       session = undefined;
       everOpened = false;
+      useInviteKey(p);
+      required = !!p;
       openSocket({ type: "join", token });
     },
-    // Get back together after a drop (or a page reload, with the saved secret).
-    rejoin(secret?: string) {
+    // Get back together after a drop (or a page reload, with the saved secret and invite key).
+    rejoin(secret?: string, p?: string) {
       if (secret) {
         session = secret;
         everOpened = true;
+        useInviteKey(p);
+        required = !!p;
       }
       if (!session) return;
       rejoining = true;
@@ -241,6 +304,8 @@ export function createConnection(ev: ConnectionEvents) {
     isOpen: () => opened && peer?.channel()?.readyState === "open",
     maxMessage: () => peer?.maxMessageSize(),
     get session() { return session; },
+    get inviteKey() { return required ? inviteKey : undefined; }, // a reload needs it to keep proving itself
+    get verified() { return verified; },
     get phase() { return phase; },
   };
 }

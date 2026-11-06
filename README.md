@@ -58,14 +58,19 @@ transfer continues from where the receiver stopped (see "Interruptions" below).
 | Receiver used the save picker or memory | Survives a drop with both tabs open, but not a reload |
 | The other device never comes back | **Disconnect** discards the partial files; unfinished partial files are removed after 24 hours |
 
-If the connection drops after the receiving device has everything but before "Sent" reaches the sending one,
-the sender keeps showing "Reconnecting…" until it presses Disconnect. The file did arrive. Files that were
-only offered or waiting their turn are not kept across a page reload; only files that had started are.
-- Mobile browsers may suspend background tabs and stop a transfer.
+Files that were only offered or waiting their turn are not kept across a page reload; only files that had started are.
 
 Tested: Chromium on Linux (Playwright; a 2 GiB transfer on the parts sink at 47 MiB/s; every row of the
 interruptions table except a real network cut, which is simulated by closing the data channel). Not
 tested: Firefox, Safari, Edge, Windows, macOS, Android, iOS, the real save picker.
+
+### Who can read a file
+
+An invite link and QR code carry a key after `#`, which the server never sees. Once connected, both devices prove
+they hold it, over the fingerprints of the encrypted connection they really have. Someone in the middle, including
+this server or Cloudflare, fails that proof and the connection is closed ("Couldn't verify the other device").
+A **typed code** carries no key, so it works but isn't verified. In a browser this has a limit: the server also
+delivers the page's code, so a malicious server could change that code. See `docs/protocol.md`.
 
 ## Local development
 
@@ -83,6 +88,7 @@ cd server && go vet ./... && go test -race ./...
 cd web && npm run build && npm test      # type-check + unit tests
 cd web && npm run test:e2e               # either-way, resume and Stored tests (starts Vite and its own Go servers; port 8080 must be free)
 CROSS_BROWSER=1 npm run test:e2e         # also Firefox/WebKit pairs (needs a working Playwright Firefox/WebKit)
+OLD_DIST=<build of an old commit> npm run test:e2e -- oldpage   # new pages against an old page; see e2e/oldpage.spec.ts
 ```
 
 Load test (run it against a local server, not production; it fakes client IPs with `X-Forwarded-For`):
@@ -184,7 +190,8 @@ sudo tail -f /var/log/nginx/access.log  # request lines only; the invite token i
 ```
 
 Limits in the server (`server/signal.go`, `server/hub.go`): 10 connections per IP, first message within
-15 s, 256 messages per connection, 32 KiB per message, 1000 rooms. The per-IP limit trusts
+15 s, 256 messages per connection, 32 KiB per message, 1000 rooms, 2000 listening sockets of up to 32 ids.
+Every socket is pinged every 45 s and closed if it doesn't answer within 15 s. The per-IP limit trusts
 `X-Forwarded-For`, which nginx sets from Cloudflare's `CF-Connecting-IP`. The Go server must therefore
 stay bound to `127.0.0.1`.
 
@@ -194,10 +201,11 @@ Nothing needs backing up: the app has no database, and stored files are temporar
 
 ```
 server/            Go server (hub.go rooms and rejoin, signal.go handler and limits, store.go Stored mode, budget.go, loadtest/)
-web/src/           main.ts the page, connection.ts signaling + WebRTC + rejoin, transfers.ts the engine (every file,
-                   either direction), transfer.ts chunking, flow control and framing, sinks.ts storage, peer.ts WebRTC,
+web/src/           main.ts the page, connection.ts signaling + WebRTC + rejoin, auth.ts proving who the other device is,
+                   transfers.ts the engine (every file, either direction), transfer.ts chunking, flow control and framing, sinks.ts storage, peer.ts WebRTC,
                    qr.ts QR code, store.ts and stored.ts Stored mode
 web/e2e/           Playwright tests: either-way transfers, resume (reloads, drops, server restart), Stored
 deploy/            nginx config, systemd unit, deploy and install scripts, optional coturn setup (install-turn.sh)
-plan.md, project-plan.md, track.md   plans and progress
+docs/              protocol.md the wire protocol, vectors.json test vectors for any client
+plan.md, project-plan.md, plan_2.md, plan_3.md, track.md   plans and progress
 ```

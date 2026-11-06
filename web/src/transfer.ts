@@ -70,21 +70,22 @@ export function framed(get: () => Channel, id: string): Channel {
   };
 }
 
-// 128 random bits as 26 base32 characters, the form the server accepts for a transfer id.
-export function newTransferId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
+// RFC 4648 base32 without padding. 16 bytes give 26 characters, the form the server accepts for an id.
+export function b32(bytes: Uint8Array) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   let bits = 0, value = 0, out = "";
   for (const b of bytes) {
-    value = (value << 8) | b;
+    value = ((value << 8) | b) & 0xfff;
     bits += 8;
     while (bits >= 5) {
       out += alphabet[(value >>> (bits - 5)) & 31];
       bits -= 5;
     }
   }
-  return out + alphabet[(value << (5 - bits)) & 31]; // 128 bits leave 3 over: pad to the 26th character
+  return bits ? out + alphabet[(value << (5 - bits)) & 31] : out;
 }
+
+export const newTransferId = () => b32(crypto.getRandomValues(new Uint8Array(16)));
 
 // Size, timestamp and the first and last MiB. Hashing a whole 20 GiB file would take too long, so an
 // edit in the middle that keeps the same size and timestamp goes undetected (very unlikely).

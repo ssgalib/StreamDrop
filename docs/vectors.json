@@ -1,0 +1,29 @@
+{
+  "inputs": {
+    "p": "CAIREEYUCULBOGAZDINRYHI6D4",
+    "fo": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "fa": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+    "no": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "na": "wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t8",
+    "ro": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "ra": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8"
+  },
+  "pairProofKey": "281aa7620faf04d489200d477006d55e933012e063a78e5f2b999b99b731ad08",
+  "pair": {
+    "transcript": "73747265616d64726f702d7632007061697200404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "offerProof": "o8Hp9PpTOYoJVI13wVwAC0PVC7-omU_Km3Q3guwPCbM",
+    "answerProof": "TGG4_efrJExOReSizZNH_uEyFwap3c6lk2ZZ12Ydmu8"
+  },
+  "k": "13454d23c891db55130f59e2090d4fc35231d41c86b62cd0a4569de167878fe1",
+  "roomId": "HITCQFMDL5DEUD5ONPCQDISBZM",
+  "ka": "348bd4ab04fb7efc49d01194b5d9938328d8005fce0702223e4b2d2a6a9cb74f",
+  "saved": {
+    "transcript": "73747265616d64726f702d763200736176656400404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "offerProof": "uSsBKtLuCSJKlBWMZ9GPt7uYACxUIVJ23Wik84FQ4I4",
+    "answerProof": "fMDLsyHL9yXuNhJHvWYbTvVWMGch0XpTR1soIZVlYmQ"
+  },
+  "confirm": {
+    "offer": "5jd063JYTkHEvVr1MnXvRNZwRkDVR7NHHbjc90WoSWI",
+    "answer": "JaCrCWerLPRsa9ujGwwbCTmyeHunrRVvpeqvsu5RJSE"
+  }
+}

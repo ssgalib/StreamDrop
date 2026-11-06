@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -227,5 +228,111 @@ func TestRejoinConcurrentArrivals(t *testing.T) {
 	wg.Wait()
 	if creators.Load() != 1 || joiners.Load() != 1 {
 		t.Fatalf("creators=%d joiners=%d, want 1 and 1", creators.Load(), joiners.Load())
+	}
+}
+
+const idA, idB = "AAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBB"
+
+func TestListenChecksItsInput(t *testing.T) {
+	h := NewHub()
+	if _, err := h.Listen([]string{"../etc"}, &Peer{}); err != ErrInvalidToken {
+		t.Fatalf("bad id: %v", err)
+	}
+	if _, err := h.Listen(make([]string, maxListenIDs+1), &Peer{}); err != errBadMessage {
+		t.Fatalf("too many ids: %v", err)
+	}
+	p := &Peer{}
+	h.Create(p)
+	if _, err := h.Listen([]string{idA}, p); err != ErrAlreadyInRoom {
+		t.Fatalf("in a room: %v", err)
+	}
+	if len(h.listening) != 0 {
+		t.Fatal("a refused listen was registered")
+	}
+}
+
+func TestBothDevicesOfAPairStayRegistered(t *testing.T) {
+	h := NewHub()
+	a, b := &Peer{}, &Peer{}
+	h.Listen([]string{idA}, a)
+	h.Listen([]string{idA}, b)
+	rung, listening := h.Ring(idA)
+	if !listening || len(rung) != 2 {
+		t.Fatalf("rung %d, listening %v", len(rung), listening)
+	}
+}
+
+func TestRingIsLimitedPerListener(t *testing.T) {
+	h := NewHub()
+	now := time.Now()
+	h.now = func() time.Time { return now }
+	a := &Peer{}
+	h.Listen([]string{idA}, a)
+	if rung, _ := h.Ring(idA); len(rung) != 1 {
+		t.Fatal("first ring missing")
+	}
+	if rung, listening := h.Ring(idA); len(rung) != 0 || !listening {
+		t.Fatal("second ring not limited, or listener forgotten")
+	}
+	// A device arriving just after someone else was rung must still hear about it.
+	b := &Peer{}
+	h.Listen([]string{idA}, b)
+	if rung, _ := h.Ring(idA); len(rung) != 1 || rung[0] != b {
+		t.Fatal("the limit should not cover a different listener")
+	}
+	now = now.Add(ringInterval)
+	if rung, _ := h.Ring(idA); len(rung) != 2 {
+		t.Fatal("ring did not recover after the interval")
+	}
+}
+
+func TestListenFindsARoomAlreadyWaiting(t *testing.T) {
+	h := NewHub()
+	h.Rejoin(idA, &Peer{})
+	waiting, err := h.Listen([]string{idA, idB, idA}, &Peer{})
+	if err != nil || len(waiting) != 1 || waiting[0] != idA {
+		t.Fatalf("waiting %v, err %v", waiting, err)
+	}
+}
+
+func TestOldestListenerIsDroppedPastTheCap(t *testing.T) {
+	h := NewHub()
+	var ps []*Peer
+	for range maxPerID + 1 {
+		p := &Peer{}
+		ps = append(ps, p)
+		h.Listen([]string{idA}, p)
+	}
+	rung, _ := h.Ring(idA)
+	if len(rung) != maxPerID || slices.Contains(rung, ps[0]) {
+		t.Fatalf("rung %d, oldest included: %v", len(rung), slices.Contains(rung, ps[0]))
+	}
+	h.Leave(ps[0]) // its entry is gone already; leaving must not disturb the others
+	if len(h.byID[idA]) != maxPerID {
+		t.Fatalf("%d left", len(h.byID[idA]))
+	}
+}
+
+func TestListenerLimitAndCleanup(t *testing.T) {
+	h := NewHub()
+	var ps []*Peer
+	for range maxListeners {
+		p := &Peer{}
+		ps = append(ps, p)
+		if _, err := h.Listen([]string{idB}, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.Listen([]string{idA}, &Peer{}); err != ErrServerBusy {
+		t.Fatalf("over the cap: %v", err)
+	}
+	if _, err := h.Listen([]string{idA}, ps[0]); err != nil {
+		t.Fatalf("a socket already listening can change its ids: %v", err)
+	}
+	for _, p := range ps {
+		h.Leave(p)
+	}
+	if len(h.listening) != 0 || len(h.byID) != 0 {
+		t.Fatalf("left behind: %d sockets, %d ids", len(h.listening), len(h.byID))
 	}
 }
