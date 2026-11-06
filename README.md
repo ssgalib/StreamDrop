@@ -16,10 +16,10 @@ The token works for joining for 10 minutes and for one receiver. Each room holds
 ## Limits
 
 - Both people must keep the page open until the transfer ends. Nothing is stored for later.
-- Connections use a public STUN server (`stun.cloudflare.com`, set in `web/src/peer.ts`) so browsers on
-  different networks can find each other. It sees each browser's public IP address but never the file.
-  There is **no TURN relay**, so two browsers behind strict NATs (some mobile carriers, corporate
-  Wi-Fi) can still fail with "Couldn't connect the two devices". Adding coturn is the next step if that happens.
+- Connections try a direct path first, using a public STUN server (`stun.cloudflare.com`, set in
+  `web/src/peer.ts`; it sees each browser's public IP, never the file). If no direct path works, an
+  optional TURN relay on the VPS carries the file (see "Relay" below). Without the relay, browsers behind
+  strict NATs (some mobile carriers, corporate Wi-Fi) can fail with "Couldn't connect the two devices".
 - Where the received file goes depends on the browser:
   | Browser support | Method | Size limit |
   |---|---|---|
@@ -83,11 +83,39 @@ deploy/deploy.sh
 This installs `/opt/streamdrop/streamdrop` (systemd unit `streamdrop`, listens on `127.0.0.1:4310`),
 the static site in `/var/www/streamdrop`, and the nginx server block `streamdrop.kurohane.xyz`.
 
+## Relay (TURN), optional
+
+Off by default. Direct transfers never touch the VPS, so they use no bandwidth. The relay carries
+files only when a direct path is impossible, and every relayed byte counts twice against the VPS
+allowance (in and out). The VPS plan allows 1 TB/month; StreamDrop is budgeted **600 GB/month**.
+
+Enable it once, on the VPS (opens ports, so read `deploy/install-turn.sh` first):
+
+```bash
+rsync -a deploy/ vps:streamdrop-deploy/ && ssh -t vps 'sudo bash ~/streamdrop-deploy/install-turn.sh'
+```
+
+It installs coturn using the VPS's public IP (no DNS record needed), writes `/etc/streamdrop/env`
+(`TURN_SECRET`, `TURN_HOST`, `RELAY_BUDGET_GB`), and restarts both services. Also open UDP 3478,
+TCP 3478 and UDP 49160-49400 in any provider-level firewall.
+
+How the budget works: coturn logs the bytes of every finished relay session; the Go server reads that
+log, keeps a monthly total (UTC calendar month) in `/var/lib/streamdrop/relay-usage.json`, and stops
+issuing relay credentials once the total reaches `RELAY_BUDGET_GB`. Browsers then use direct and STUN
+paths only until next month. Sessions still running are counted when they end, so a long transfer can
+overshoot a little; coturn's per-session speed limit (24 Mbit/s), 10-session cap and the 3-hour
+credential life bound that. The provider's own panel is the source of truth, because it includes your
+other sites; check it monthly.
+
+Test the relay by opening the site with `?relay=1` on both sides (this forbids direct paths), and check
+`sudo cat /var/lib/streamdrop/relay-usage.json` grows afterwards. Do not leave `?relay=1` in shared links.
+
 ## Operating it
 
 ```bash
 sudo journalctl -u streamdrop -f        # the server logs only "listening"; tokens and SDP are never logged
 sudo systemctl restart streamdrop       # running transfers are unaffected; only new rooms are cut for a moment
+sudo journalctl -u coturn -f            # only if the relay is enabled
 systemctl status streamdrop
 sudo tail -f /var/log/nginx/access.log  # request lines only; the invite token is in the URL fragment
 ```
@@ -105,6 +133,6 @@ Nothing needs backing up: the app has no database or stored files.
 server/            Go signaling server (hub.go rooms, signal.go handler and limits, loadtest/)
 web/src/           main.ts page logic, peer.ts WebRTC, transfer.ts chunking and flow control, sinks.ts storage
 web/e2e/           Playwright test
-deploy/            nginx config, systemd unit, deploy and install scripts
+deploy/            nginx config, systemd unit, deploy and install scripts, optional coturn setup (install-turn.sh)
 plan.md, project-plan.md, track.md   plans and progress
 ```

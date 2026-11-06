@@ -243,11 +243,11 @@ function connect(first: object) {
         case "joined":
           startSection.hidden = true;
           roomSection.hidden = false;
-          peer = createPeer(false, events);
+          peer = createPeer(false, msg.iceServers ?? [], events);
           setStatus("Connecting");
           break;
         case "peer-joined":
-          peer = createPeer(true, events);
+          peer = createPeer(true, msg.iceServers ?? [], events);
           setStatus("Connecting");
           await peer.start();
           break;

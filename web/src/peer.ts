@@ -14,11 +14,15 @@ type Events = {
   low(): void;
 };
 
-export function createPeer(initiator: boolean, on: Events) {
+export function createPeer(initiator: boolean, relayServers: RTCIceServer[], on: Events) {
   // STUN lets each browser learn its public address so peers on different networks can connect.
-  // It only sees the address, never the file. shortcut: no TURN relay, so strict NATs can still fail;
-  // add coturn if real users report "Couldn't connect the two devices".
-  const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }] });
+  // It only sees the address, never the file. relayServers (TURN) come from the server once two
+  // peers are paired; they carry the file only when no direct path works.
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }, ...relayServers],
+    // ?relay=1 forces the relay path, to test it without redeploying.
+    iceTransportPolicy: new URLSearchParams(location.search).has("relay") ? "relay" : "all",
+  });
   const pending: RTCIceCandidateInit[] = [];
   let channel: RTCDataChannel | undefined;
 

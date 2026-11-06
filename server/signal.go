@@ -14,12 +14,13 @@ import (
 )
 
 type Message struct {
-	Type      string          `json:"type"`
-	Token     string          `json:"token,omitempty"`
-	ExpiresAt time.Time       `json:"expiresAt,omitzero"`
-	SDP       string          `json:"sdp,omitempty"`
-	Candidate json.RawMessage `json:"candidate,omitempty"` // passed through unread
-	Code      string          `json:"code,omitempty"`
+	Type       string          `json:"type"`
+	Token      string          `json:"token,omitempty"`
+	ExpiresAt  time.Time       `json:"expiresAt,omitzero"`
+	SDP        string          `json:"sdp,omitempty"`
+	Candidate  json.RawMessage `json:"candidate,omitempty"` // passed through unread
+	Code       string          `json:"code,omitempty"`
+	ICEServers []ICEServer     `json:"iceServers,omitempty"`
 }
 
 var errBadMessage = errors.New("bad-message")
@@ -82,7 +83,8 @@ func validateSignal(m Message, isCreator bool) error {
 	return errBadMessage
 }
 
-func newHandler(h *Hub) http.HandlerFunc {
+// ice supplies relay servers for a freshly paired room; nil means none.
+func newHandler(h *Hub, ice func() []ICEServer) http.HandlerFunc {
 	limiter := &ipLimiter{n: map[string]int{}}
 	firstTimeout := firstMessageTimeout // read once: tests change the variable between handlers
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -127,12 +129,12 @@ func newHandler(h *Hub) http.HandlerFunc {
 				sendError(p, "bad-message")
 				continue
 			}
-			handle(h, p, m)
+			handle(h, p, m, ice)
 		}
 	}
 }
 
-func handle(h *Hub, p *Peer, m Message) {
+func handle(h *Hub, p *Peer, m Message, ice func() []ICEServer) {
 	switch m.Type {
 	case "create":
 		room, err := h.Create(p)
@@ -147,9 +149,14 @@ func handle(h *Hub, p *Peer, m Message) {
 			return
 		}
 		// Joiner must hear "joined" first so it is ready before an offer arrives.
-		send(p, Message{Type: "joined"})
+		// Only paired peers get relay credentials; "created" carries none.
+		var servers []ICEServer
+		if ice != nil {
+			servers = ice()
+		}
+		send(p, Message{Type: "joined", ICEServers: servers})
 		if o := h.Other(p); o != nil {
-			send(o, Message{Type: "peer-joined"})
+			send(o, Message{Type: "peer-joined", ICEServers: servers})
 		}
 	case "offer", "answer", "candidate":
 		// p.isCreator is only written by Create before the handler loop continues, so this read is safe.

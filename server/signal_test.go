@@ -94,7 +94,7 @@ func (c *client) expectError(code string) {
 
 // pair returns a creator and joiner that are already connected to each other.
 func pair(t *testing.T) (a, b *client) {
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	t.Cleanup(srv.Close)
 	a, b = dial(t, srv.URL), dial(t, srv.URL)
 	a.send(`{"type":"create"}`)
@@ -118,7 +118,7 @@ func TestPairAndRelay(t *testing.T) {
 }
 
 func TestOfferBeforeJoin(t *testing.T) {
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	defer srv.Close()
 	a := dial(t, srv.URL)
 	a.send(`{"type":"create"}`)
@@ -128,7 +128,7 @@ func TestOfferBeforeJoin(t *testing.T) {
 }
 
 func TestMalformedJSON(t *testing.T) {
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	defer srv.Close()
 	a := dial(t, srv.URL)
 	a.send(`{not json`)
@@ -151,7 +151,7 @@ func TestPeerLeft(t *testing.T) {
 }
 
 func TestOversizeMessageCloses(t *testing.T) {
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	defer srv.Close()
 	a := dial(t, srv.URL)
 	a.send(`{"type":"offer","sdp":"` + strings.Repeat("a", 40<<10) + `"}`)
@@ -163,7 +163,7 @@ func TestOversizeMessageCloses(t *testing.T) {
 }
 
 func TestEvilOriginRejected(t *testing.T) {
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	defer srv.Close()
 	_, _, err := websocket.Dial(context.Background(), "ws"+strings.TrimPrefix(srv.URL, "http"),
 		&websocket.DialOptions{HTTPHeader: http.Header{"Origin": {"http://evil.example"}}})
@@ -173,7 +173,7 @@ func TestEvilOriginRejected(t *testing.T) {
 }
 
 func TestConnectionsPerIP(t *testing.T) {
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 	dialFrom := func(ip string) error {
@@ -201,7 +201,7 @@ func TestSilentConnectionCloses(t *testing.T) {
 	old := firstMessageTimeout
 	firstMessageTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { firstMessageTimeout = old })
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	defer srv.Close()
 	a := dial(t, srv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -212,7 +212,7 @@ func TestSilentConnectionCloses(t *testing.T) {
 }
 
 func TestMessageCap(t *testing.T) {
-	srv := httptest.NewServer(newHandler(NewHub()))
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
 	defer srv.Close()
 	a := dial(t, srv.URL)
 	for range maxMessages + 1 {
@@ -238,7 +238,7 @@ func TestMessageCap(t *testing.T) {
 
 func TestExpiredCreatorIsToldAndClosed(t *testing.T) {
 	h, clock := newTestHub()
-	srv := httptest.NewServer(newHandler(h))
+	srv := httptest.NewServer(newHandler(h, nil))
 	defer srv.Close()
 	a := dial(t, srv.URL)
 	a.send(`{"type":"create"}`)

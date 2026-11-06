@@ -4,6 +4,9 @@ After=network.target
 
 [Service]
 ExecStart=/opt/streamdrop/streamdrop -addr 127.0.0.1:4310
+# Optional: relay settings written by install-turn.sh.
+EnvironmentFile=-/etc/streamdrop/env
+StateDirectory=streamdrop
 DynamicUser=yes
 Restart=always
 RestartSec=3

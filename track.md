@@ -125,3 +125,14 @@ Not verified:
   - Count each relayed byte twice (in + out) unless the provider is confirmed to count outgoing only: 600 GB then covers roughly 300 GB of relayed files.
   - coturn's `max-bps`/`user-quota`/`total-quota` limit speed and sessions, not monthly bytes, so a hard 600 GB stop needs our own accounting (e.g. the Go server stops issuing TURN credentials once a monthly relay counter reaches the budget). Confirm what coturn can report (its metrics) against the docs for the pinned version before building it.
   - Check the provider's panel monthly: it shows total VPS usage including the other sites.
+
+# Milestone 6: TURN relay (built in the repo, NOT installed or tested end to end)
+- [x] `server/turn.go`: short-lived HMAC credentials (3 h); unit test uses an OpenSSL-computed vector. Disabled unless `TURN_SECRET` and `TURN_HOST` are set.
+- [x] Relay servers are sent only in `joined` / `peer-joined`, never in `created` (tested).
+- [x] `server/budget.go`: counts `rb+sb` from coturn's session `usage:` log lines per UTC month, persists state, survives restarts and log rotation, ignores `peer usage` lines; stops issuing credentials at `RELAY_BUDGET_GB` (default 600). Tests: parsing, partial lines, restart, rotation, month rollover.
+- [x] Client passes relay servers into `RTCPeerConnection`; `?relay=1` forces the relay path for testing.
+- [x] `deploy/turnserver.conf.in` (denies private ranges, loopback, tailscale range and the VPS's own IP; 24 Mbit/s per session, 10 sessions), `deploy/install-turn.sh` (opt-in, uses the public IP so no DNS record), systemd drop-in, logrotate.
+- [x] Ubuntu's coturn 4.6.1 has no Prometheus support, so the budget reads its log; the `usage:` format string was confirmed in the package binary.
+- Existing tests all pass (Go `-race`, 9 unit, e2e).
+- [ ] NOT done: install coturn on the VPS (needs sudo), forced-relay transfer, wrong-credential refusal, private-address refusal, speed limit, behaviour when credentials expire mid-transfer, provider firewall ports. Nothing relay-related runs in production until `install-turn.sh` is run.
+- Overshoot: running sessions are only counted when they end; worst case is bounded by 10 sessions x 3 MB/s x 3 h, far above what real use will reach.

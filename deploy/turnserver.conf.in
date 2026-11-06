@@ -1,0 +1,38 @@
+# coturn config for StreamDrop. @SECRET@ and @IP@ are filled in by install-turn.sh.
+listening-port=3478
+min-port=49160
+max-port=49400
+realm=streamdrop.kurohane.xyz
+
+use-auth-secret
+static-auth-secret=@SECRET@
+
+no-cli
+fingerprint
+no-tls
+no-dtls
+
+# Log session usage to a file the Go server reads for the monthly budget.
+simple-log
+log-file=/var/log/turnserver/turnserver.log
+no-stdout-log
+
+# Limits: about 24 Mbit/s per session, few sessions. These also bound how much a running session can
+# add to the monthly count before it ends (see the shortcut note in server/budget.go).
+max-bps=3000000
+user-quota=4
+total-quota=10
+
+# Stop the relay being used to reach this machine or private networks.
+no-multicast-peers
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=@IP@-@IP@
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
