@@ -9,8 +9,8 @@
 - [x] Step 7: `web/index.html`
 - [x] Step 8: `web/src/peer.ts`
 - [x] Step 9: `web/src/main.ts`
-- [~] Step 10: automated checks pass (`go vet`, `go test -race`, `npm run build`); manual Chrome checklist NOT done
+- [x] Step 10: automated checks pass; browser checklist run with Playwright (headless Chromium), all pass except two not run (below)
 
-## Remaining
-- Run the manual Chrome checklist from plan.md Step 10 (two tabs, DataChannel, stop-server test, expiry, XSS).
-- Quick server + Vite proxy smoke test was blocked, so the `/ws` proxy is unverified.
+## Not run
+- Expiry check (set `tokenTTL` to 30s): covered by the Go fake-clock tests only, not in a browser.
+- Real "stop the Go server" test: emulated by cutting signaling in the page (the DataChannel kept working), because killing your server was not allowed. Worth one manual try.
