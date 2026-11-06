@@ -118,3 +118,10 @@ Not verified:
 # After Milestone 7
 - [x] Added STUN (`stun:stun.cloudflare.com:3478`) in `web/src/peer.ts`. The server answered a test binding request. TURN is still not set up. Needs `deploy/deploy.sh` to go live.
 - Bandwidth: direct transfers never pass through the VPS (only tiny signaling messages). Only a future TURN relay would use VPS bandwidth. The VPS is a generic KVM guest; the provider's monthly cap is unknown (check the hosting panel). eth0 has sent 1.0 GiB in the 1.5 days since boot.
+
+# Decisions
+- STUN deployed and live (bundle checked).
+- **Bandwidth budget: StreamDrop may use at most 600 GB/month of the VPS's 1 TB/month allowance** (the other 400 GB is for the other sites). Today it uses ~0 because direct transfers never touch the VPS. The cap only matters once a TURN relay exists. When adding TURN (Milestone 6):
+  - Count each relayed byte twice (in + out) unless the provider is confirmed to count outgoing only: 600 GB then covers roughly 300 GB of relayed files.
+  - coturn's `max-bps`/`user-quota`/`total-quota` limit speed and sessions, not monthly bytes, so a hard 600 GB stop needs our own accounting (e.g. the Go server stops issuing TURN credentials once a monthly relay counter reaches the budget). Confirm what coturn can report (its metrics) against the docs for the pinned version before building it.
+  - Check the provider's panel monthly: it shows total VPS usage including the other sites.
