@@ -5,7 +5,19 @@ Send a file directly from one browser to another. A small Go server only introdu
 stored on the server. An optional second mode, **Stored**, keeps an encrypted copy on the server for
 24 hours so the sender can leave (see "Stored mode" below). It is off unless you switch it on.
 
-Live: https://streamdrop.kurohane.xyz
+Live: https://streamdrop.kurohane.xyz (it can lag behind this repo)
+
+## Status
+
+An early personal project, not a finished product. The security design has had no outside review.
+
+| Part | State |
+|---|---|
+| Website and Go server | Working. Tested in Chromium on Linux. |
+| Desktop app (`desktop/`) | Working on Linux. No releases yet. Windows and macOS have never been run. |
+| Android (`android/`) | A test client only, with no interface. There is no Android app to install yet. |
+
+`track.md` is the full log of what was built, tested and left unverified. `docs/protocol.md` is the wire protocol.
 
 ## How it works
 
@@ -61,8 +73,14 @@ transfer continues from where the receiver stopped (see "Interruptions" below).
 Files that were only offered or waiting their turn are not kept across a page reload; only files that had started are.
 
 Tested: Chromium on Linux (Playwright; a 2 GiB transfer on the parts sink at 47 MiB/s; every row of the
-interruptions table except a real network cut, which is simulated by closing the data channel). Not
-tested: Firefox, Safari, Edge, Windows, macOS, Android, iOS, the real save picker.
+interruptions table except a real network cut, which is simulated by closing the data channel).
+
+The Android test client was also run against Chromium on a Pixel 7a (Android 17): 2 GiB each way over home
+Wi-Fi at 12-18 MiB/s, a transfer that survived the file picker opening and the screen going off, and 8 MiB over
+one mobile network with no relay.
+
+Not tested: Firefox, Safari, Edge, Windows, macOS, iOS, phone browsers in automated tests, other phones and
+carriers, a real 20 GiB transfer, screen readers, the real save picker.
 
 ### Who can read a file
 
@@ -70,7 +88,11 @@ An invite link and QR code carry a key after `#`, which the server never sees. O
 they hold it, over the fingerprints of the encrypted connection they really have. Someone in the middle, including
 this server or Cloudflare, fails that proof and the connection is closed ("Couldn't verify the other device").
 A **typed code** carries no key, so it works but isn't verified. In a browser this has a limit: the server also
-delivers the page's code, so a malicious server could change that code. See `docs/protocol.md`.
+delivers the page's code, so a malicious server could change that code. The desktop app bundles its code, so it
+doesn't have that limit. See `docs/protocol.md`.
+
+The server and Cloudflare can still see metadata: IP addresses, when devices are online, and which ones meet.
+**This design is custom and has had no outside security review. Don't rely on it for anything high-risk.**
 
 ## Desktop app
 
@@ -99,6 +121,22 @@ npm run test:e2e        # real apps against a real Go server (windows stay hidde
 npm run dist            # AppImage and .deb into desktop/dist
 ```
 
+## Android test client
+
+`android/` proves the protocol works from native Android. It is driven by adb, with no interface, reconnect or
+resume, and `SpikeService.kt` will be replaced. `Auth.kt` holds the real crypto and passes `docs/vectors.json`.
+
+```bash
+cd android && ./gradlew :app:testDebugUnitTest :app:assembleDebug   # needs JDK 17 and the Android SDK
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb reverse tcp:8080 tcp:8080                                       # on a phone; an emulator uses ws://10.0.2.2:8080/ws
+cd ../web && ANDROID_SPIKE=ws://127.0.0.1:8080/ws npm run test:e2e -- android
+```
+
+On an emulator, boot with `-feature -Wifi`, because its virtual Wi-Fi drops the network every so often.
+`ANDROID_PHONE=1` adds two tests that change the phone's state: they open the file picker, turn the screen off and
+switch Wi-Fi off for a moment.
+
 ## Local development
 
 Needs Go and Node.
@@ -126,6 +164,9 @@ cd server && go build -o /tmp/streamdrop . && (ulimit -n 20000; /tmp/streamdrop 
 ```
 
 ## Deployment
+
+These steps describe the author's own server. To run your own, replace `streamdrop.kurohane.xyz` in `deploy/` and
+the host `vps` in `deploy/deploy.sh`, and the default server address in `desktop/main.js`.
 
 Production is: Cloudflare Tunnel -> nginx (static files + `/ws` proxy) -> Go binary under systemd.
 Cloudflare provides HTTPS. There is no database and no `.env` is needed.
@@ -234,7 +275,7 @@ web/src/           main.ts the page, connection.ts signaling + WebRTC + rejoin, 
                    saved.ts saved connections and the listener, app.ts what only the desktop app does
 web/e2e/           Playwright tests: either-way transfers, resume (reloads, drops, server restart), Stored
 deploy/            nginx config, systemd unit, deploy and install scripts, optional coturn setup (install-turn.sh)
-android/           Kotlin spike: Auth.kt the protocol's crypto and gate, SpikeService.kt throwaway, driven by adb
+android/           Kotlin test client: Auth.kt the protocol's crypto and gate, SpikeService.kt throwaway, driven by adb
 desktop/           Electron app: main.js the shell, files.js everything touching disk, preload.js what the page may call
 docs/              protocol.md the wire protocol, vectors.json test vectors for any client
 plan.md, project-plan.md, plan_2.md, plan_3.md, track.md   plans and progress
