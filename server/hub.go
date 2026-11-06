@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,19 +66,70 @@ func (h *Hub) Join(token string, p *Peer) (*Room, error) {
 	if p.room != nil {
 		return nil, ErrAlreadyInRoom
 	}
+	// Rooms made by Rejoin are keyed with this prefix; an invite token never is.
 	r, ok := h.rooms[token]
-	if !ok {
+	if !ok || strings.HasPrefix(token, rejoinPrefix) {
 		return nil, ErrInvalidToken
 	}
+	if err := h.joinLocked(r, p); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// joinLocked adds p as the joiner of r. Caller holds h.mu.
+func (h *Hub) joinLocked(r *Room, p *Peer) error {
 	if r.joiner != nil {
-		return nil, ErrRoomFull
+		return ErrRoomFull
 	}
 	if !h.now().Before(r.expiresAt) {
-		return nil, ErrExpired
+		return ErrExpired
 	}
 	r.joiner = p
 	p.room = r
-	return r, nil
+	return nil
+}
+
+const rejoinPrefix = "r:"
+
+// validID reports whether s has the shape of rand.Text(): 26 base32 characters.
+func validID(s string) bool {
+	if len(s) != 26 {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'A' || c > 'Z') && (c < '2' || c > '7') {
+			return false
+		}
+	}
+	return true
+}
+
+// Rejoin is get-or-create for a transfer id, so two peers who both reconnect meet whoever arrives
+// first. It keeps no memory of past rooms: a room exists only while someone is waiting in it.
+func (h *Hub) Rejoin(id string, p *Peer) (r *Room, created bool, err error) {
+	if !validID(id) {
+		return nil, false, ErrInvalidToken
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p.room != nil {
+		return nil, false, ErrAlreadyInRoom
+	}
+	key := rejoinPrefix + id
+	if r, ok := h.rooms[key]; ok {
+		if err := h.joinLocked(r, p); err != nil {
+			return nil, false, err
+		}
+		return r, false, nil
+	}
+	if len(h.rooms) >= maxRooms {
+		return nil, false, ErrServerBusy
+	}
+	r = &Room{token: key, expiresAt: h.now().Add(tokenTTL), creator: p}
+	h.rooms[key] = r
+	p.room, p.isCreator = r, true
+	return r, true, nil
 }
 
 func (h *Hub) Other(p *Peer) *Peer {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,5 +127,105 @@ func TestConcurrentJoin(t *testing.T) {
 	wg.Wait()
 	if ok.Load() != 1 {
 		t.Fatalf("%d joins succeeded", ok.Load())
+	}
+}
+
+func TestRejoinGetOrCreate(t *testing.T) {
+	h, _ := newTestHub()
+	id := rand.Text()
+	a, b := &Peer{}, &Peer{}
+	r, created, err := h.Rejoin(id, a)
+	if err != nil || !created || !a.isCreator {
+		t.Fatalf("first arrival should create: %v created=%v", err, created)
+	}
+	r2, created, err := h.Rejoin(id, b)
+	if err != nil || created || r2 != r || b.isCreator {
+		t.Fatalf("second arrival should join: %v created=%v", err, created)
+	}
+	if h.Other(a) != b || h.Other(b) != a {
+		t.Fatal("peers should be paired")
+	}
+	if _, _, err := h.Rejoin(id, &Peer{}); err != ErrRoomFull {
+		t.Fatalf("third peer: %v", err)
+	}
+	// After one leaves, the next arrival starts a fresh room: the server keeps no memory.
+	h.Leave(a)
+	if _, created, err := h.Rejoin(id, &Peer{}); err != nil || !created {
+		t.Fatalf("after leave: %v created=%v", err, created)
+	}
+}
+
+func TestRejoinRejectsBadIDs(t *testing.T) {
+	h, _ := newTestHub()
+	good := rand.Text()
+	bad := []string{"", "short", good + "A", good[:25], strings.ToLower(good), good[:25] + "1", good[:25] + "/", "r:" + good[:24], good[:24] + "..", "../" + good[:23]}
+	for _, id := range bad {
+		if _, _, err := h.Rejoin(id, &Peer{}); err != ErrInvalidToken {
+			t.Errorf("id %q: got %v, want invalid-token", id, err)
+		}
+	}
+}
+
+func TestRejoinAndInviteTokensAreSeparate(t *testing.T) {
+	h, _ := newTestHub()
+	invite, _ := h.Create(&Peer{})
+	// Rejoining with a string equal to an invite token must not reach that invite room.
+	p := &Peer{}
+	if r, created, err := h.Rejoin(invite.token, p); err != nil || !created || r == invite {
+		t.Fatalf("rejoin with an invite token reached it: %v created=%v", err, created)
+	}
+	// And a rejoin room can't be entered through the invite path.
+	id := rand.Text()
+	h.Rejoin(id, &Peer{})
+	if _, err := h.Join("r:"+id, &Peer{}); err != ErrInvalidToken {
+		t.Fatalf("join into a rejoin room: %v", err)
+	}
+}
+
+func TestRejoinChecks(t *testing.T) {
+	h, clock := newTestHub()
+	a := &Peer{}
+	if _, _, err := h.Rejoin(rand.Text(), a); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.Rejoin(rand.Text(), a); err != ErrAlreadyInRoom {
+		t.Fatalf("already in room: %v", err)
+	}
+	// An unpaired rejoin room expires and its creator is returned by Sweep.
+	*clock = clock.Add(tokenTTL)
+	if got := h.Sweep(); len(got) != 1 || got[0] != a {
+		t.Fatalf("swept %v", got)
+	}
+	// Server busy at the room cap.
+	h2, _ := newTestHub()
+	for range maxRooms {
+		h2.Rejoin(rand.Text(), &Peer{})
+	}
+	if _, _, err := h2.Rejoin(rand.Text(), &Peer{}); err != ErrServerBusy {
+		t.Fatalf("at cap: %v", err)
+	}
+}
+
+func TestRejoinConcurrentArrivals(t *testing.T) {
+	h, _ := newTestHub()
+	id := rand.Text()
+	var creators, joiners atomic.Int32
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, created, err := h.Rejoin(id, &Peer{})
+			switch {
+			case err == nil && created:
+				creators.Add(1)
+			case err == nil:
+				joiners.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if creators.Load() != 1 || joiners.Load() != 1 {
+		t.Fatalf("creators=%d joiners=%d, want 1 and 1", creators.Load(), joiners.Load())
 	}
 }

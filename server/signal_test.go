@@ -254,3 +254,47 @@ func TestExpiredCreatorIsToldAndClosed(t *testing.T) {
 		t.Fatalf("got %v, want normal closure", err)
 	}
 }
+
+func TestRejoinOverWebSocket(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+	id := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:26]
+	a, b := dial(t, srv.URL), dial(t, srv.URL)
+	a.send(`{"type":"rejoin","token":"` + id + `"}`)
+	if m := a.expect("created"); m.Token != "" {
+		t.Fatalf("created for a rejoin should not echo a token: %+v", m)
+	}
+	b.send(`{"type":"rejoin","token":"` + id + `"}`)
+	b.expect("joined")
+	a.expect("peer-joined")
+	// The paired room relays signaling like any other.
+	a.send(`{"type":"offer","sdp":"v=0 resume"}`)
+	if m := b.expect("offer"); m.SDP != "v=0 resume" {
+		t.Fatalf("sdp changed: %q", m.SDP)
+	}
+	c := dial(t, srv.URL)
+	c.send(`{"type":"rejoin","token":"` + id + `"}`)
+	c.expectError("room-full")
+}
+
+func TestRejoinBadIDOverWebSocket(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+	a := dial(t, srv.URL)
+	for _, id := range []string{"", "nope", "../../etc/passwd", "ABCDEFGHIJKLMNOPQRSTUVWXY1"} {
+		a.send(`{"type":"rejoin","token":"` + id + `"}`)
+		a.expectError("invalid-token")
+	}
+}
+
+func TestRejoinCannotReachInviteRoom(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub(), nil))
+	defer srv.Close()
+	a, b := dial(t, srv.URL), dial(t, srv.URL)
+	a.send(`{"type":"create"}`)
+	token := a.expect("created").Token
+	b.send(`{"type":"rejoin","token":"` + token + `"}`)
+	b.expect("created") // a separate room, not the invite room
+	a.send(`{"type":"offer","sdp":"x"}`)
+	a.expectError("not-paired")
+}

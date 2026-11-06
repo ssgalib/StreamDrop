@@ -148,16 +148,18 @@ func handle(h *Hub, p *Peer, m Message, ice func() []ICEServer) {
 			sendError(p, err.Error())
 			return
 		}
-		// Joiner must hear "joined" first so it is ready before an offer arrives.
-		// Only paired peers get relay credentials; "created" carries none.
-		var servers []ICEServer
-		if ice != nil {
-			servers = ice()
+		announcePaired(h, p, ice)
+	case "rejoin":
+		room, created, err := h.Rejoin(m.Token, p)
+		if err != nil {
+			sendError(p, err.Error())
+			return
 		}
-		send(p, Message{Type: "joined", ICEServers: servers})
-		if o := h.Other(p); o != nil {
-			send(o, Message{Type: "peer-joined", ICEServers: servers})
+		if created {
+			send(p, Message{Type: "created", ExpiresAt: room.expiresAt})
+			return
 		}
+		announcePaired(h, p, ice)
 	case "offer", "answer", "candidate":
 		// p.isCreator is only written by Create before the handler loop continues, so this read is safe.
 		if validateSignal(m, p.isCreator) != nil {
@@ -173,6 +175,20 @@ func handle(h *Hub, p *Peer, m Message, ice func() []ICEServer) {
 		send(o, Message{Type: m.Type, SDP: m.SDP, Candidate: m.Candidate})
 	default:
 		sendError(p, "bad-message")
+	}
+}
+
+// announcePaired tells a newly joined peer and the one waiting for it that the room is full.
+func announcePaired(h *Hub, p *Peer, ice func() []ICEServer) {
+	// Joiner must hear "joined" first so it is ready before an offer arrives.
+	// Only paired peers get relay credentials; "created" carries none.
+	var servers []ICEServer
+	if ice != nil {
+		servers = ice()
+	}
+	send(p, Message{Type: "joined", ICEServers: servers})
+	if o := h.Other(p); o != nil {
+		send(o, Message{Type: "peer-joined", ICEServers: servers})
 	}
 }
 

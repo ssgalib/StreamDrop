@@ -144,3 +144,10 @@ Not verified:
 - [x] Invite link also shown as a QR code (`web/src/qr.ts`, dependency `qrcode-generator`, drawn as SVG elements). Hidden once the other person joins or the room expires.
 - [x] Checked in Chromium: the rendered QR (desktop light and 360 px dark) decodes with an independent decoder (jsQR) to exactly the invite link; no sideways scroll; hidden after pairing. e2e, unit and build pass; `npm audit` clean.
 - Not checked: scanning with a real phone camera; the live site under its CSP (SVG built with DOM attributes, which style-src does not block); needs `deploy/deploy.sh` to go live.
+
+# plan_2.md, step 1: server `rejoin` (done)
+- [x] `Hub.Rejoin(id, p)`: get-or-create keyed `"r:" + id`; shares the join checks (`room-full`, `expired`) via `joinLocked`; same `maxRooms` cap. The server keeps no memory of past rooms.
+- [x] `Join` refuses tokens starting with `r:`, so rejoin rooms can't be entered with an invite path; `Rejoin` can't reach invite rooms because of the prefix.
+- [x] `rejoin` message: first arrival gets `created` (no token echoed), second gets `joined` and the first `peer-joined`, with relay credentials as for `join` (shared `announcePaired`). Ids must be 26 base32 characters, else `invalid-token`.
+- [x] Tests: both arrival orders, third peer `room-full`, 10 bad ids including `../`, invite token unreachable and vice versa, already-in-room, unpaired room expires via Sweep, server busy at the cap, 50 concurrent arrivals give exactly one creator and one joiner, WebSocket flow including offer relay. `go test -race -count=5` passes.
+- Not changed yet: nothing in the browser uses `rejoin` (steps 2-3), so production behaviour is unchanged until the client lands.
