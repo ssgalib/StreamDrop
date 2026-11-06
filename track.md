@@ -32,3 +32,25 @@
 - Test files are excluded from `tsc` (`node:test` types need `@types/node`); node runs them directly.
 - Playwright script is in the session scratchpad, not the repo.
 - Not tested: Firefox/Safari, files over 500 MiB (memory sink holds the whole file, Milestone 3 fixes that).
+
+# Milestone 3: Large files
+- [x] 3.1 `sinks.ts`: `pickerSink`, `opfsSink`, `memorySink`; picker called first in the Accept click handler; `AbortError` keeps the prompt
+- [x] 3.2 `chooseSink` (picker, then OPFS if size*2 fits the quota, then memory up to 512 MiB); failures are sent to the sender as `reject` with a reason
+- [x] 3.3 OPFS files older than 24 h are deleted on page load
+- [x] 3.4 `QuotaExceededError` shows "Not enough disk space", sends `cancel`, aborts the sink
+- [x] 3.5 Measured: 2 GiB over localhost in 56 s, about 36 MiB/s. Not tuned (plan says only if needed).
+- [x] "Finalizing…" status shown while the sink closes; `saved` is only sent afterwards
+- Bug fixed on the way: chunks still in flight after a cancel or failure re-fired "Unexpected data" and hid the real error. Idle receivers now drop them.
+
+Verified in headless Chromium with Playwright (persistent profile, OPFS path):
+- 2 GiB random file: sha256 matches
+- cancel at 50% from sender and from receiver: peer told, no OPFS entries left
+- receiver tab closed mid-transfer: sender shows an error
+- file over 512 MiB with no OPFS: sender told why
+- picker path (stubbed `showSaveFilePicker`, since a real one needs a native dialog): file matches; `AbortError` keeps the prompt
+
+Not verified:
+- Real `showSaveFilePicker` and a 20 GiB file (this machine has 9.8 GB free)
+- Firefox / Safari
+- Memory flatness in a task manager, slow disk, USB drive
+- Incognito/private windows: Chrome reports a 10 GiB quota but failed at about 1.4 GB. The failure is handled ("Not enough disk space", peer told, nothing left behind), but `estimate()` can't be trusted there.

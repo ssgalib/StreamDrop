@@ -1,6 +1,6 @@
 import { createPeer, type Signal } from "./peer";
 import { CHUNK, createReceiver, createSender, parseMeta, type Meta, type Sink } from "./transfer";
-import { memorySink } from "./sinks";
+import { chooseSink, cleanOpfs } from "./sinks";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const startSection = $("#start");
@@ -78,7 +78,12 @@ function abortTransfer(message: string) {
   endTransfer(message);
 }
 
-const fail = (err: unknown) => abortTransfer(err instanceof Error ? err.message : String(err));
+const fail = (err: unknown) =>
+  abortTransfer(
+    err instanceof Error && err.name === "QuotaExceededError"
+      ? "Not enough disk space"
+      : err instanceof Error ? err.message : String(err),
+  );
 
 function startTransfer() {
   state = "active";
@@ -116,7 +121,9 @@ function onControl(msg: any) {
     case "reject":
       if (state !== "offered") return;
       resetTransfer();
-      showError("Receiver declined the file.");
+      showError(msg.reason === "declined" || typeof msg.reason !== "string"
+        ? "Receiver declined the file."
+        : `Receiver can't take the file: ${msg.reason.slice(0, 200)}`);
       setStatus("Connected");
       break;
     case "ack":
@@ -124,6 +131,7 @@ function onControl(msg: any) {
       break;
     case "done":
       if (!receiver) return fail(new Error("Unexpected end of file"));
+      setStatus("Finalizing…");
       receiver.done().then(() => {
         resetTransfer();
         setStatus("File received");
@@ -169,7 +177,8 @@ const events = {
     try {
       if (typeof data === "string") return onControl(JSON.parse(data));
       if (state === "active" && receiver) return receiver.chunk(data);
-      fail(new Error("Unexpected data from peer"));
+      // Idle: chunks still in flight after a cancel or failure. Only data before Accept is a protocol error.
+      if (state === "offered") fail(new Error("Unexpected data from peer"));
     } catch (err) {
       fail(err);
     }
@@ -249,11 +258,23 @@ fileInput.addEventListener("change", () => {
   sendCtl({ t: "meta", name: file.name, size: file.size, type: file.type });
 });
 
-$("#accept").addEventListener("click", () => {
+$("#accept").addEventListener("click", async () => {
   const m = incoming;
   if (state !== "offered" || !m) return;
   showError("");
-  sink = memorySink(m.name, m.type);
+  let s: Sink;
+  try {
+    s = await chooseSink(m); // first await in the handler: the save picker needs the click
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return; // picker cancelled: stay on the prompt
+    const reason = err instanceof Error ? err.message : String(err);
+    sendCtl({ t: "reject", reason });
+    resetTransfer();
+    showError(reason);
+    return;
+  }
+  if (state !== "offered" || incoming !== m) return void s.abort(); // peer cancelled while the picker was open
+  sink = s;
   receiver = createReceiver(m.size, sink, peer!.channel(), (n) => showProgress(n, m.size), fail);
   startTransfer();
   showProgress(0, m.size);
@@ -272,3 +293,5 @@ $("#cancel").addEventListener("click", () => {
   abortTransfer("Transfer cancelled.");
   setStatus("Connected");
 });
+
+void cleanOpfs();
