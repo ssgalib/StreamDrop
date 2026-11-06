@@ -1,4 +1,4 @@
-import { isId } from "./transfer.ts";
+import { isId, CHUNK, ID_LEN, MAX_CONTROL, controlBytes } from "./transfer.ts";
 
 // Proves who is on the other end of a DataChannel (docs/protocol.md, sections 2.4-2.7). The signaling server
 // carries the SDP, so it could sit in the middle of a connection. Each side proves it knows a key the server
@@ -12,6 +12,7 @@ export const MIN_VERSION = 1; // the oldest it accepts
 const HELLO_MS = 3000;
 const AUTH_MS = 15_000;
 const MAX_HELD = 256;
+const MAX_QUEUED_BYTES = 16 * 1024 * 1024;
 
 const enc = (s: string) => new TextEncoder().encode(s);
 
@@ -118,12 +119,16 @@ export function createGate(o: GateOptions) {
   let t: Uint8Array | undefined;
   let peerCaps: string[] = [];
   const held: (string | ArrayBuffer)[] = [];
+  let queuedBytes = 0;
+  let heldBytes = 0;
+  let queuedMessages = 0;
   const mine = crypto.getRandomValues(new Uint8Array(32));
   const other: Role = o.role === "offer" ? "answer" : "offer";
 
   const stop = () => {
     clearTimeout(timer);
     held.length = 0;
+    heldBytes = 0;
   };
   function fail(reason: "auth" | "upgrade") {
     if (state === "closed") return;
@@ -169,6 +174,9 @@ export function createGate(o: GateOptions) {
       return step(data);
     }
     if (held.length >= MAX_HELD) return fail("auth");
+    const bytes = typeof data === "string" ? controlBytes(data) : data.byteLength;
+    if (heldBytes + bytes > MAX_QUEUED_BYTES) return fail("auth");
+    heldBytes += bytes;
     held.push(data);
   }
 
@@ -205,7 +213,19 @@ export function createGate(o: GateOptions) {
       arm(o.required ? AUTH_MS : HELLO_MS, noHello);
     },
     message(data: string | ArrayBuffer) {
-      work = work.then(() => step(data)).catch(() => fail("auth"));
+      if (state === "closed") return;
+      if (typeof data === "string" && data.length > MAX_CONTROL) return fail("auth");
+      const bytes = typeof data === "string" ? controlBytes(data) : data.byteLength;
+      const max = typeof data === "string" ? MAX_CONTROL : CHUNK + ID_LEN;
+      // Bound before chaining: otherwise an async crypto operation can accumulate unlimited callbacks.
+      if (bytes > max || queuedBytes + heldBytes + bytes > MAX_QUEUED_BYTES || queuedMessages >= MAX_HELD) return fail("auth");
+      queuedBytes += bytes;
+      queuedMessages++;
+      work = work.then(async () => {
+        queuedBytes -= bytes;
+        queuedMessages--;
+        await step(data);
+      }).catch(() => fail("auth"));
     },
     close() {
       state = "closed";

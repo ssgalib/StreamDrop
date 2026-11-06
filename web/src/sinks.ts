@@ -84,6 +84,12 @@ function partsSink(
   let aborted = false;
   return {
     resumable: true,
+    async checkpoint() {
+      if (!out) return;
+      await out.close();
+      out = undefined;
+      index++;
+    },
     async write(data) {
       if (aborted) return; // a write that was already queued when the file was discarded
       if (!out) {

@@ -48,11 +48,11 @@ async function launch(d, extra = {}) {
     args: [root],
     env: {
       ...process.env, HOME: d.home, XDG_CONFIG_HOME: path.join(d.home, ".config"), STREAMDROP_USER_DATA: d.data, STREAMDROP_SIGNAL: SIGNAL,
-      STREAMDROP_ORIGIN: "http://invite.test", STREAMDROP_HIDDEN: "1", STREAMDROP_NO_TRAY: "1", STREAMDROP_TEST_PLAIN_STORE: "1", ...extra,
+      STREAMDROP_ORIGIN: "http://invite.test", STREAMDROP_HIDDEN: "1", STREAMDROP_NO_TRAY: "1", STREAMDROP_TEST_PLAIN_STORE: "1", STREAMDROP_TEST_OFFSCREEN: "1", ...extra,
     },
   });
   const page = await electronApp.firstWindow();
-  await page.waitForSelector("#create");
+  await page.waitForSelector("#create", { state: "attached" }); // restored work may already have hidden Home
   return { electronApp, page, d, downloads };
 }
 
@@ -62,6 +62,12 @@ const connected = async (p) => {
   await expect(p.locator("#peer-state")).toHaveText(/^Connected to /, { timeout: 30_000 });
 };
 const row = (p, name) => p.locator(".item", { hasText: name });
+
+async function closeApp(app) {
+  const proc = app.electronApp.process();
+  if (proc.exitCode !== null || proc.signalCode !== null || app.page.isClosed()) return;
+  await app.electronApp.close();
+}
 
 async function pairByLink(a, b) {
   await a.page.click("#create");
@@ -102,8 +108,8 @@ test("the app connects to the real server from its own origin, and files go both
     expect(sha(await sendFile(a, b, "one.bin", one))).toBe(shaOf(one));
     expect(sha(await sendFile(b, a, "two.bin", two))).toBe(shaOf(two));
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -120,7 +126,7 @@ test("the page is locked down: no Node, a strict policy, and nothing else may be
     expect(await status("app://streamdrop/..%2f..%2fpackage.json")).toBe(404);
     expect(await status("app://elsewhere/index.html")).toBe(404);
   } finally {
-    await a.electronApp.close();
+    await closeApp(a);
   }
 });
 
@@ -132,8 +138,8 @@ test("saved devices find each other after both restart, with no link", async () 
     await save(a, b);
     expect(devices(a)[0].roomId).toBe(devices(b)[0].roomId);
     expect(devices(a)[0].name).toBe(os.hostname());
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
 
     a = await launch(da);
     b = await launch(db);
@@ -145,8 +151,8 @@ test("saved devices find each other after both restart, with no link", async () 
     const data = randomBytes(1_000_000);
     expect(sha(await sendFile(a, b, "later.bin", data))).toBe(shaOf(data));
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -156,8 +162,8 @@ test("calling a device that is off waits, and it connects when that device start
   try {
     await pairByLink(a, b);
     await save(a, b);
-    await b.electronApp.close();
-    await a.electronApp.close();
+    await closeApp(b);
+    await closeApp(a);
 
     a = await launch(da);
     await a.page.locator(".device-connect").click();
@@ -166,8 +172,8 @@ test("calling a device that is off waits, and it connects when that device start
     await connected(a.page);
     await connected(b.page);
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -177,8 +183,8 @@ test("a device whose key no longer matches is refused", async () => {
   try {
     await pairByLink(a, b);
     await save(a, b);
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
 
     // the same room id with a different key: what someone who only learned the id would have
     const list = devices({ d: db });
@@ -190,8 +196,8 @@ test("a device whose key no longer matches is refused", async () => {
     await expect(a.page.locator("#ended")).toContainText("Couldn't verify", { timeout: 30_000 });
     await expect(a.page.locator("#dropzone")).toBeHidden();
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -235,8 +241,8 @@ test("a hostile name from the other device stays in the folder, and always accep
     expect(fs.existsSync(path.join(db.home, "evil.txt"))).toBe(false);
     expect(fs.existsSync(path.join(db.home, "outside"))).toBe(false);
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -260,8 +266,8 @@ test("a folder arrives with its structure, without a zip", async () => {
     expect(fs.readFileSync(path.join(got, "cover.jpg"), "utf8")).toBe("cover");
     expect(fs.statSync(path.join(got, "2026", "june", "b.jpg")).size).toBe(0);
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -299,8 +305,8 @@ test("killing both apps mid-file: they restart, find each other and finish with 
     const final = path.join(b.downloads, "big.bin");
     expect(sha(final)).toBe(sha(big));
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -312,8 +318,8 @@ test("without a safe place for keys, the app won't offer to save, but transfers 
     const data = randomBytes(10_000);
     expect(sha(await sendFile(a, b, "still.bin", data))).toBe(shaOf(data));
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -329,7 +335,7 @@ test("autostart writes a login entry and can be turned off", async () => {
     await a.page.locator("#autostart").uncheck();
     await expect.poll(() => fs.existsSync(entry)).toBe(false);
   } finally {
-    await a.electronApp.close();
+    await closeApp(a);
   }
 });
 
@@ -346,8 +352,8 @@ test("an idle saved connection closes by itself, and the pair stays", async () =
     expect(devices(a)).toHaveLength(1);
     expect(devices(b)).toHaveLength(1);
   } finally {
-    await a.electronApp.close();
-    await b.electronApp.close();
+    await closeApp(a);
+    await closeApp(b);
   }
 });
 
@@ -391,7 +397,189 @@ test("a browser and the app connect through a link, both ways, but the browser i
     await expect(row(a.page, "from-browser.bin")).toContainText("Received", { timeout: 30_000 });
     expect(sha(path.join(a.downloads, "from-browser.bin"))).toBe(shaOf(back));
   } finally {
-    await a.electronApp.close();
+    await closeApp(a);
     await browser.close();
   }
+});
+
+test("unaccepted folder offers survive both apps being killed", async () => {
+  const da = dirs(), db = dirs();
+  let a = await launch(da), b = await launch(db);
+  try {
+    await pairByLink(a, b);
+    await save(a, b);
+    const top = path.join(da.base, "queued-folder");
+    fs.mkdirSync(path.join(top, "nested"), { recursive: true });
+    fs.writeFileSync(path.join(top, "nested", "queued.txt"), "queued restart contents");
+    await a.electronApp.evaluate(({ dialog }, dir) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, top);
+    await a.page.click("#send-folder");
+    await expect(row(b.page, "queued.txt").locator(".accept")).toBeVisible();
+    for (const app of [a, b]) {
+      await expect.poll(() => {
+        try { return JSON.parse(JSON.parse(fs.readFileSync(path.join(app.d.data, "record.json"), "utf8"))).items[0]?.state; }
+        catch { return null; }
+      }).toBe("offered");
+    }
+    a.electronApp.process().kill("SIGKILL"); b.electronApp.process().kill("SIGKILL");
+    await new Promise((r) => setTimeout(r, 500));
+    a = await launch(da); b = await launch(db);
+    await connected(a.page); await connected(b.page);
+    await row(b.page, "queued.txt").locator(".accept").click();
+    await expect(row(a.page, "queued.txt")).toContainText("Sent");
+    expect(fs.readFileSync(path.join(b.downloads, "queued-folder", "nested", "queued.txt"), "utf8")).toBe("queued restart contents");
+  } finally { await closeApp(a); await closeApp(b); }
+});
+
+test("removing a connected saved device closes the authenticated connection", async () => {
+  const a = await launch(dirs()), b = await launch(dirs());
+  try {
+    await pairByLink(a, b); await save(a, b);
+    // Saved-device controls are on Home; invoke the same visible Remove command after showing it.
+    await a.page.locator("#saved").evaluate((el) => { el.closest("#home").hidden = false; });
+    await a.page.locator(".device-remove").click();
+    await expect(a.page.locator("#ended")).toContainText("removed");
+    await expect(b.page.locator("#ended")).toContainText("removed");
+    expect(devices(a)).toHaveLength(0); expect(devices(b)).toHaveLength(0);
+    await expect(a.page.locator("#dropzone")).toBeHidden();
+  } finally { await closeApp(a); await closeApp(b); }
+});
+
+test("the renderer cannot read or journal arbitrary filesystem paths", async () => {
+  const a = await launch(dirs());
+  try {
+    const denied = await a.page.evaluate(async () => {
+      const b = window.streamdropApp;
+      const p = '/etc/hosts';
+      const outcomes = [];
+      for (const operation of [() => b.file.read(p, 0, 8), () => b.file.stat(p), () => b.file.walk(p),
+        () => b.record.setItem('', JSON.stringify({ session: 'A'.repeat(26), items: [{ path: p }] }))]) {
+        try { await operation(); outcomes.push(false); } catch { outcomes.push(true); }
+      }
+      return outcomes;
+    });
+    expect(denied).toEqual([true, true, true, true]);
+  } finally { await closeApp(a); }
+});
+
+async function startRecoveryTransfer(a, b, name) {
+  const source = path.join(a.d.base, name);
+  const fd = fs.openSync(source, 'w');
+  const chunk = randomBytes(1024 * 1024);
+  for (let i = 0; i < 128; i++) fs.writeSync(fd, chunk);
+  fs.closeSync(fd);
+  await a.page.evaluate(() => {
+    const original = RTCDataChannel.prototype.send;
+    let n = 0;
+    RTCDataChannel.prototype.send = function (data) {
+      if (typeof data !== 'string' && ++n % 8 === 0) {
+        const end = performance.now() + 15;
+        while (performance.now() < end);
+      }
+      return original.call(this, data);
+    };
+  });
+  await a.page.setInputFiles('#files', source);
+  await row(b.page, name).locator('.accept').click();
+  await b.page.waitForFunction(() => {
+    const progress = document.querySelector('.item progress:not([hidden])');
+    return progress && progress.value / progress.max > 0.15;
+  }, null, { timeout: 30000 });
+  return source;
+}
+
+const appRecord = (a) => {
+  try { return JSON.parse(JSON.parse(fs.readFileSync(path.join(a.d.data, 'record.json'), 'utf8'))); }
+  catch { return null; }
+};
+
+test('kept app transfers remain stopped after restart and resume when one device calls', async () => {
+  const da = dirs(), db = dirs();
+  let a = await launch(da), b = await launch(db);
+  try {
+    await pairByLink(a, b); await save(a, b);
+    const source = await startRecoveryTransfer(a, b, 'keep.bin');
+    await b.page.click('#leave');
+    await b.page.click('#keep-unfinished');
+    await expect(b.page.locator('#resume-kept')).toBeVisible();
+    await expect(a.page.locator('#resume-kept')).toBeVisible();
+    await expect.poll(() => appRecord(a)?.held).toBe(true);
+    await expect.poll(() => appRecord(b)?.held).toBe(true);
+    a.electronApp.process().kill('SIGKILL'); b.electronApp.process().kill('SIGKILL');
+    await new Promise((r) => setTimeout(r, 500));
+    a = await launch(da); b = await launch(db);
+    await expect(a.page.locator('#unfinished')).toBeVisible();
+    await expect(b.page.locator('#unfinished')).toBeVisible();
+    await expect(a.page.locator('#session')).toBeHidden();
+    await a.page.click('#resume'); // b answers the saved-device ring and restores its held queue
+    await expect(row(a.page, 'keep.bin')).toContainText('Sent', { timeout: 60000 });
+    await expect(row(b.page, 'keep.bin')).toContainText('Received', { timeout: 60000 });
+    expect(sha(path.join(b.downloads, 'keep.bin'))).toBe(sha(source));
+    expect(fs.readdirSync(b.downloads).filter((n) => n !== '.streamdrop')).toEqual(['keep.bin']);
+  } finally { await closeApp(a); await closeApp(b); }
+});
+
+test('Discard while disconnected persists cancellation and removes the partial file', async () => {
+  const da = dirs(), db = dirs();
+  let a = await launch(da), b = await launch(db);
+  try {
+    await pairByLink(a, b); await save(a, b);
+    await startRecoveryTransfer(a, b, 'discard.bin');
+    a.electronApp.process().kill('SIGKILL');
+    await expect(b.page.locator('.sessionbar')).toHaveAttribute('data-state', 'paused', { timeout: 15000 });
+    await b.page.click('#leave'); await b.page.click('#discard-unfinished');
+    await expect(b.page.locator('#home')).toBeVisible();
+    const outcomes = JSON.parse(fs.readFileSync(path.join(db.data, 'receipts.json'), 'utf8'));
+    expect(outcomes.some((r) => r.item.name === 'discard.bin' && r.item.state === 'cancelled')).toBe(true);
+    expect(fs.readdirSync(path.join(b.downloads, '.streamdrop')).some((n) => n.endsWith('.part'))).toBe(false);
+    a = await launch(da);
+    await expect(row(a.page, 'discard.bin')).toContainText('Cancelled', { timeout: 30000 });
+    expect(fs.existsSync(path.join(b.downloads, 'discard.bin'))).toBe(false);
+  } finally { await closeApp(a); await closeApp(b); }
+});
+
+test('cancellation ledger overrides an older active journal after both apps restart', async () => {
+  const da = dirs(), db = dirs();
+  let a = await launch(da), b = await launch(db);
+  try {
+    await pairByLink(a, b); await save(a, b);
+    await startRecoveryTransfer(a, b, 'cancel-crash.bin');
+    const older = await b.page.evaluate(() => window.streamdropApp.record.getItem(''));
+    expect(JSON.parse(older).items.some((i) => i.state === 'paused')).toBe(true);
+    // Recreate the valid disk state at a crash between the ledger commit and journal replacement.
+    // The real main-process bridge performs the durable ledger write; no engine cleanup has run.
+    await b.page.evaluate(async (snapshot) => {
+      const record = JSON.parse(snapshot);
+      record.items = record.items.map((i) => ({ ...i, state: 'cancelled' }));
+      await window.streamdropApp.record.setItem('', JSON.stringify(record));
+    }, older);
+    a.electronApp.process().kill('SIGKILL'); b.electronApp.process().kill('SIGKILL');
+    await new Promise((r) => setTimeout(r, 500));
+    fs.writeFileSync(path.join(db.data, 'record.json'), JSON.stringify(older));
+    b = await launch(db); a = await launch(da);
+    await expect(row(a.page, 'cancel-crash.bin')).toContainText('Cancelled', { timeout: 30000 });
+    expect(fs.existsSync(path.join(b.downloads, 'cancel-crash.bin'))).toBe(false);
+    await expect.poll(() => fs.readdirSync(path.join(b.downloads, '.streamdrop')).filter((n) => n.endsWith('.part')).length).toBe(0);
+  } finally { await closeApp(a); await closeApp(b); }
+});
+
+test('kept temporary app transfers resume after restart without a saved device', async () => {
+  const da = dirs(), db = dirs();
+  let a = await launch(da), b = await launch(db);
+  try {
+    await pairByLink(a, b);
+    const source = await startRecoveryTransfer(a, b, 'temporary-keep.bin');
+    await b.page.click('#leave'); await b.page.click('#keep-unfinished');
+    await expect(a.page.locator('#resume-kept')).toBeVisible();
+    await expect.poll(() => appRecord(a)?.held).toBe(true);
+    await expect.poll(() => appRecord(b)?.held).toBe(true);
+    a.electronApp.process().kill('SIGKILL'); b.electronApp.process().kill('SIGKILL');
+    await new Promise((r) => setTimeout(r, 500));
+    a = await launch(da); b = await launch(db);
+    await expect(a.page.locator('#unfinished')).toBeVisible();
+    await expect(b.page.locator('#unfinished')).toBeVisible();
+    await a.page.click('#resume'); await b.page.click('#resume');
+    await expect(row(a.page, 'temporary-keep.bin')).toContainText('Sent', { timeout: 60000 });
+    expect(sha(path.join(b.downloads, 'temporary-keep.bin'))).toBe(sha(source));
+    await expect(a.page.locator('#session')).toHaveAttribute('data-verified', 'true');
+  } finally { await closeApp(a); await closeApp(b); }
 });

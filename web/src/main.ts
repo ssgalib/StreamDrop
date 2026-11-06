@@ -40,7 +40,10 @@ function view(v: View) {
 // ---------------------------------------------------------------- connection and transfers
 
 const RECORD_KEY = "streamdrop-session";
-type Record = { session: string; p?: string; items: Saved[]; at: number };
+type Record = { session: string; p?: string; items: Saved[]; at: number; held?: boolean };
+let holding = false;
+let heldConnection: { session: string; p?: string; savedRoom?: string } | undefined;
+let keeping: Promise<boolean> | undefined;
 
 // How long a pair is remembered for an automatic rejoin when the page was killed or reloaded, and how long
 // a device waits for the other to come back before giving up (when no file is in progress).
@@ -53,28 +56,32 @@ const recordStore = () => app?.record ?? localStorage;
 // What a reload needs to carry on: the shared secret, and the files that were moving. Written even when
 // nothing is moving, so a phone that kills the tab while you pick files can reconnect by itself.
 // Reads are wrapped and validated: storage can be blocked or edited.
-function saveRecords(items: Saved[]) {
+async function saveRecords(items: Saved[]) {
   try {
-    if (conn.session) recordStore().setItem(RECORD_KEY, JSON.stringify({ session: hooks?.savedRoom() ?? conn.session, p: conn.inviteKey, items, at: Date.now() }));
-  } catch { /* storage blocked: the pair just can't be rejoined after a reload */ }
+    const session = hooks?.savedRoom() ?? conn.session ?? heldConnection?.session;
+    if (session) await recordStore().setItem(RECORD_KEY, JSON.stringify({ schema: 2, session, p: conn.inviteKey ?? heldConnection?.p, items, at: Date.now(), held: holding }));
+  } catch (err) {
+    if (app) throw err;
+  }
 }
 
-function clearRecord() {
-  try { recordStore().removeItem(RECORD_KEY); } catch { /* ignore */ }
+async function clearRecord() {
+  try { await recordStore().removeItem(RECORD_KEY); return true; }
+  catch { showError("Couldn't clear saved transfer progress."); return false; }
 }
 
 function loadRecords(): Record | null {
   try {
     const raw = JSON.parse(recordStore().getItem(RECORD_KEY) ?? "null");
-    if (!isId(raw?.session) || !Array.isArray(raw.items)) return null;
+    if (!isId(raw?.session) || !Array.isArray(raw.items) || raw.items.length > 10500 || raw.schema !== undefined && raw.schema !== 2) return null;
     const items: Saved[] = [];
-    for (const r of raw.items.slice(0, 500)) {
+    for (const r of raw.items) {
       const m = parseMeta(r);
       if (m && (r.dir === "send" || r.dir === "receive")) {
-        items.push({ id: m.id, dir: r.dir, name: m.name, size: m.size, type: m.type, fp: m.fp, ...(typeof r.path === "string" && { path: r.path }) });
+        items.push({ ...m, dir: r.dir, ...(typeof r.path === "string" && { path: r.path }), ...(app && typeof r.root === "string" && { root: r.root }), ...((r.state === "cancelled" || app && ["offered", "paused", "done"].includes(r.state)) && { state: r.state }) });
       }
     }
-    return { session: raw.session, p: isId(raw.p) ? raw.p : undefined, items, at: Number.isFinite(raw.at) ? raw.at : 0 };
+    return { session: raw.session, p: isId(raw.p) ? raw.p : undefined, items, at: Number.isFinite(raw.at) ? raw.at : 0, held: raw.held === true };
   } catch {
     return null;
   }
@@ -117,6 +124,8 @@ const conn = createConnection({
     setStatus("Link expired");
   },
   open(reconnected) {
+    holding = false;
+    hooks?.setHeld(false);
     clearTimeout(giveUp);
     sessionEl.dataset.verified = String(conn.verified);
     endedEl.hidden = true;
@@ -125,6 +134,7 @@ const conn = createConnection({
     showError("");
     transfers.onOpen(reconnected);
     hooks?.opened(reconnected);
+    void Promise.resolve(transfers.persist()).catch(() => showError("Couldn't save transfer progress."));
   },
   message(data) {
     if (!hooks?.message(data)) void transfers.onMessage(data);
@@ -132,11 +142,12 @@ const conn = createConnection({
   low: () => transfers.onLow(),
   async lost() {
     await transfers.onLost(); // files that were moving pause with exact offsets
+    if (holding) return;
     conn.rejoin(); // always try to get back together: a phone freezes its tab while you pick a file
     armGiveUp();
   },
   bye: () => ended("The other device disconnected."), // it left on purpose: no reason to wait
-  session: () => transfers.persist(), // the pair can now be saved and rejoined
+  session: () => { void Promise.resolve(transfers.persist()).catch(() => showError("Couldn't save transfer progress.")); },
   error: connectionError,
   refused(text) {
     hooks?.refused();
@@ -161,6 +172,7 @@ const transfers = createTransfers({
   maxMessage: () => conn.maxMessage(),
   chooseSink,
   save: saveRecords,
+  durableQueue: !!app,
   pathOf: app && pathOf,
   changed: scheduleRender,
   warn: showError,
@@ -172,30 +184,84 @@ function setSessionState(s: "open" | "paused" | "ended") {
   peerState.textContent = s === "open" ? `Connected to ${who}` : s === "paused" ? "Reconnecting…" : "Disconnected";
 }
 
-// The connection is over and nothing is left to finish. History stays visible.
-function ended(text: string) {
-  clearTimeout(giveUp);
-  hooks?.ended();
-  transfers.cancelAll();
-  conn.leave();
-  clearRecord();
+function showEnded(text: string, kept = false) {
   setSessionState("ended");
   setStatus("Disconnected");
   $("#ended-text").textContent = text;
   endedEl.hidden = false;
   dropzone.hidden = true;
   leaveBtn.hidden = true; // nothing left to disconnect from
+  $("#resume-kept").hidden = !kept;
   scheduleRender();
+}
+
+// A remote disconnect or failed authentication never silently throws away partial data.
+function ended(text: string) {
+  if (transfers.hasUnfinished()) { void keepUnfinished(text); return; }
+  clearTimeout(giveUp);
+  conn.leave();
+  hooks?.ended();
+  void clearRecord();
+  showEnded(text);
+}
+
+function keepUnfinished(text = "Unfinished transfers are kept on this device.", notify = false): Promise<boolean> {
+  if (keeping) return keeping;
+  const session = hooks?.savedRoom() ?? conn.session ?? heldConnection?.session;
+  if (!session) return Promise.resolve(false);
+  heldConnection = { session, p: conn.inviteKey ?? heldConnection?.p, savedRoom: hooks?.savedRoom() ?? heldConnection?.savedRoom };
+  holding = true;
+  hooks?.setHeld(true);
+  clearTimeout(giveUp);
+  keeping = (async () => {
+    try {
+      await transfers.onLost();
+      await transfers.persist();
+      if (notify) {
+        try { conn.send({ t: "bye", reason: "user" }); } catch { /* already disconnected */ }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      conn.leave();
+      showEnded(text, true);
+      return true;
+    } catch {
+      showError("Couldn't keep transfer progress. Stay connected and try again.");
+      holding = false;
+      hooks?.setHeld(false);
+      if (conn.isOpen()) transfers.onOpen(true);
+      return false;
+    } finally { keeping = undefined; }
+  })();
+  return keeping;
+}
+
+async function resumeHeld() {
+  if (!heldConnection) return;
+  holding = false;
+  hooks?.setHeld(false);
+  try {
+    await transfers.persist();
+    if (heldConnection.savedRoom && hooks) await hooks.resumeConnection(heldConnection.savedRoom);
+    else conn.rejoin(heldConnection.session, heldConnection.p);
+    $("#resume-kept").hidden = true;
+  } catch (err) {
+    holding = true;
+    hooks?.setHeld(true);
+    showError(err instanceof Error ? err.message : "Couldn't resume these transfers.");
+  }
 }
 
 async function goHome() {
   clearTimeout(giveUp);
-  hooks?.ended();
-  transfers.cancelAll();
-  try { conn.send({ t: "bye", reason: "user" }); } catch { /* not connected */ } // so the other device doesn't wait for us
-  await new Promise((r) => setTimeout(r, 150)); // let it leave before the connection closes
+  if (!(await transfers.cancelAll())) return false;
+  try { conn.send({ t: "bye", reason: "user" }); } catch { /* not connected */ }
+  await new Promise((r) => setTimeout(r, 150));
   conn.leave();
-  clearRecord();
+  hooks?.ended();
+  hooks?.setHeld(false);
+  if (!(await clearRecord())) return false;
+  holding = false;
+  heldConnection = undefined;
   transfers.clearFinished();
   endedEl.hidden = true;
   dropzone.hidden = false;
@@ -203,6 +269,7 @@ async function goHome() {
   view("home");
   setStatus("");
   showError("");
+  return true;
 }
 
 // ---------------------------------------------------------------- the activity list
@@ -237,7 +304,7 @@ function describe(it: Item): string {
       if (it.speed > 0 && it.bytes < it.size) text += ` · ${fmtSize(it.speed)}/s · ${fmtTime((it.size - it.bytes) / it.speed)} left`;
       return text;
     }
-    case "paused": return `${size} · Reconnecting…`;
+    case "paused": return `${size} · ${it.note || (holding ? "Kept for later" : "Reconnecting…")}`;
     case "done": return `${size} · ${it.dir === "send" ? "Sent" : "Received"}`;
     case "declined": return `${size} · Declined${it.note ? ` · ${it.note}` : ""}`;
     case "cancelled": return `${size} · Cancelled${it.note ? ` · ${it.note}` : ""}`;
@@ -402,8 +469,26 @@ $("#join-form").addEventListener("submit", (e) => {
 $("#accept-all").addEventListener("click", () => void transfers.acceptAll());
 $("#decline-all").addEventListener("click", () => transfers.declineAll());
 clearBtn.addEventListener("click", () => transfers.clearFinished());
-leaveBtn.addEventListener("click", goHome);
-$("#restart").addEventListener("click", goHome);
+const disconnectChoice = $<HTMLDialogElement>("#disconnect-choice");
+disconnectChoice.addEventListener("cancel", (event) => {
+  if (disconnectChoice.querySelector("button:disabled")) event.preventDefault();
+});
+function requestDisconnect() {
+  if (transfers.hasUnfinished()) disconnectChoice.showModal();
+  else void goHome();
+}
+leaveBtn.addEventListener("click", requestDisconnect);
+$("#restart").addEventListener("click", requestDisconnect);
+$("#resume-kept").addEventListener("click", () => void resumeHeld());
+$("#stay-connected").addEventListener("click", () => disconnectChoice.close());
+async function chooseDisconnect(action: () => Promise<boolean>) {
+  const buttons = [...disconnectChoice.querySelectorAll<HTMLButtonElement>("button")];
+  buttons.forEach((b) => { b.disabled = true; });
+  try { if (await action()) disconnectChoice.close(); }
+  finally { buttons.forEach((b) => { b.disabled = false; }); }
+}
+$("#keep-unfinished").addEventListener("click", () => void chooseDisconnect(() => keepUnfinished(undefined, true)));
+$("#discard-unfinished").addEventListener("click", () => void chooseDisconnect(goHome));
 bulkEl.setAttribute("aria-live", "polite"); // new offers are announced
 
 // ---------------------------------------------------------------- after a reload: carry on with what was interrupted
@@ -418,25 +503,28 @@ let rejoined = false;
 
 async function showUnfinished() {
   const rec = loadRecords();
-  if (!rec || !rec.items.length) return;
+  if (!rec) return;
+  const pending = rec.items.filter((i) => i.state !== "done" && i.state !== "cancelled");
+  if (!pending.length) return;
   resumeSession = rec.session;
   resumeKey = rec.p;
-  pendingSends = rec.items.filter((i) => i.dir === "send");
-  const receives = rec.items.filter((i) => i.dir === "receive");
+  pendingSends = pending.filter((i) => i.dir === "send");
+  const receives = pending.filter((i) => i.dir === "receive");
   const list = $("#unfinished-list");
   list.replaceChildren();
-  for (const it of rec.items) {
+  for (const it of pending) {
     const li = document.createElement("li");
     const name = document.createElement("strong");
     name.textContent = it.name; // untrusted: textContent only
     const note = document.createElement("span");
     note.className = "pct";
-    note.textContent = it.dir === "receive" ? ` (${it.size ? Math.floor(((await partsOffset(it.id)) / it.size) * 100) : 100}% saved)` : " (choose the file again)";
+    note.textContent = app ? " (kept for later)" : it.dir === "receive" ? ` (${it.size ? Math.floor(((await partsOffset(it.id)) / it.size) * 100) : 100}% saved)` : " (choose the file again)";
     li.append(name, note);
     list.append(li);
   }
-  resumeBtn.hidden = receives.length === 0;
-  $("#unfinished-send").hidden = pendingSends.length === 0;
+  resumeBtn.hidden = !app && receives.length === 0;
+  resumeBtn.textContent = app ? "Resume transfers" : "Resume receiving";
+  $("#unfinished-send").hidden = !!app || pendingSends.length === 0;
   unfinishedEl.hidden = false;
 }
 
@@ -451,14 +539,19 @@ resumeBtn.addEventListener("click", async () => {
   if (!rec) return;
   showError("");
   try {
-    for (const it of rec.items.filter((i) => i.dir === "receive")) {
-      const opened = await openParts(it.id, it.name, it.type);
-      transfers.restore(it, { sink: opened.sink, offset: opened.offset });
+    if (app && hooks) {
+      if (!(await hooks.resume({ ...rec, held: false }))) return;
+      unfinishedEl.hidden = true;
+      return;
     }
+    const restored = [];
+    for (const it of rec.items.filter((i) => i.dir === "receive" && i.state !== "cancelled" && i.state !== "done")) {
+      const opened = await openParts(it.id, it.name, it.type);
+      restored.push({ saved: it, sink: opened.sink, offset: opened.offset });
+    }
+    await transfers.restoreAll(restored);
   } catch {
-    clearRecord();
-    unfinishedEl.hidden = true;
-    return showError("This browser can't continue that transfer. Ask the other device to send the file again.");
+    return showError(app ? "Couldn't open these transfers. Reconnect the drive and try Resume." : "This browser can't continue that transfer. Ask the other device to send the file again.");
   }
   resumeBtn.hidden = true;
   if (!pendingSends.length) unfinishedEl.hidden = true;
@@ -488,9 +581,17 @@ resumeFiles.addEventListener("change", async () => {
 
 $("#discard").addEventListener("click", async () => {
   const rec = loadRecords();
-  clearRecord();
+  if (!rec) return;
+  heldConnection = { session: rec.session, p: rec.p, ...(app && { savedRoom: rec.session }) };
+  await transfers.restoreAll(rec.items.map((saved) => ({ saved })));
+  if (!(await transfers.cancelAll())) return;
+  for (const it of rec.items) if (it.dir === "receive" && it.state !== "done") {
+    if (app) await app.sink.abort(it.id, it.root);
+    else await discardParts(it.id);
+  }
+  if (!(await clearRecord())) return;
   unfinishedEl.hidden = true;
-  for (const it of rec?.items ?? []) if (it.dir === "receive") await discardParts(it.id);
+  heldConnection = undefined;
 });
 
 // ---------------------------------------------------------------- start up
@@ -506,9 +607,13 @@ const stored = parseStoredLink(location.hash);
 const linkToken = location.hash.slice(1);
 view("home");
 if (app) {
-  hooks = await initApp(app, { conn, transfers, ended, offerFiles, showError, setStatus, setSessionState, view });
+  hooks = await initApp(app, { conn, transfers, ended, offerFiles, showError, setStatus, setSessionState, view, records: loadRecords });
 }
-if (hooks && await hooks.resume(loadRecords())) {
+for (const saved of loadRecords()?.items ?? []) if (saved.state === "cancelled") transfers.restore(saved, {});
+let restoredApp = false;
+try { restoredApp = !!hooks && await hooks.resume(loadRecords()); }
+catch { showError("Couldn't open unfinished transfers. Reconnect the drive and try Resume."); hooks?.setHeld(true); }
+if (restoredApp) {
   armGiveUp();
 } else if (stored) {
   history.replaceState(null, "", location.pathname + location.search);
@@ -522,7 +627,7 @@ if (hooks && await hooks.resume(loadRecords())) {
   conn.join(token, p);
 } else {
   const rec = loadRecords();
-  if (!app && rec && !rec.items.length && Date.now() - rec.at < RECONNECT_WINDOW) {
+  if (!app && rec && !rec.held && rec.items.every((i) => i.state === "cancelled") && Date.now() - rec.at < RECONNECT_WINDOW) {
     // The tab was killed or reloaded (a phone does this while you pick a file) with nothing in flight: rejoin.
     resumeSession = rec.session;
     rejoined = true;
@@ -533,6 +638,7 @@ if (hooks && await hooks.resume(loadRecords())) {
     if (!app) void initStored(); // Stored mode lives on the website
   }
 }
+hooks?.ready();
 
 // Coming back to the tab (e.g. from the Files app): don't wait for a retry timer that was frozen meanwhile.
 document.addEventListener("visibilitychange", () => {
@@ -541,5 +647,5 @@ document.addEventListener("visibilitychange", () => {
 
 // Keep the saved pair fresh while connected, so it counts as recent if the tab is killed hours later.
 setInterval(() => {
-  if (conn.isOpen()) transfers.persist();
+  if (conn.isOpen()) void Promise.resolve(transfers.persist()).catch(() => showError("Couldn't save transfer progress. Keep StreamDrop open."));
 }, 60_000);

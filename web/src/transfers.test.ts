@@ -33,7 +33,7 @@ type Side = {
 };
 
 // Two engines joined by an in-memory channel that keeps order, can be cut, and drops what is in flight when cut.
-function connect(slowMs = 0) {
+function connect(slowMs = 0, durableQueue = false) {
   // slowMs delays each data frame, so a test can act while a file is still on its way
   // gen counts connections: a frame only arrives on the connection it was sent on, as with a real channel
   const link = {
@@ -62,6 +62,7 @@ function connect(slowMs = 0) {
       },
     };
     me.engine = createTransfers({
+      durableQueue,
       send: (m) => ch.send(JSON.stringify(m)),
       channel: () => ch,
       channelOpen: () => link.up,
@@ -371,4 +372,186 @@ test("oversized or oddly named files are refused locally and never announced", a
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(b.engine.items().length, 1);
   assert.equal(a.engine.items().find((i) => i.name.length === 300)!.state, "failed");
+});
+
+test("Decline all covers the later offers of a 500-file batch", async () => {
+  const { a, b } = connect();
+  await a.engine.offer(Array.from({ length: 500 }, (_, i) => file(`decline${i}`, 1)));
+  await until(() => b.engine.items().length === 100, "first offers");
+  b.engine.declineAll();
+  await until(() => a.engine.items().every((i) => i.state === "declined"), "whole batch declined");
+  assert.equal(b.engine.items().length, 500);
+  assert.ok(b.engine.items().every((i) => i.state === "declined"));
+});
+
+test("app journal keeps unanswered offers with batch and folder metadata", async () => {
+  const { a, b } = connect(0, true);
+  const f = Object.assign(file("queued.bin", 5), { rel: "album/sub" });
+  await a.engine.offer([f]);
+  await until(() => b.engine.items().length === 1, "offer");
+  for (const side of [a, b]) {
+    assert.equal(side.saved.length, 1);
+    assert.equal(side.saved[0].state, "offered");
+    assert.equal(side.saved[0].rel, "album/sub");
+    assert.equal(side.saved[0].batch?.n, 1);
+  }
+});
+
+test("clearing history and restarting the receiver retain completion receipts", async () => {
+  const { a, b } = connect(0, true);
+  await a.engine.offer([file("receipt.bin", 20)]);
+  await until(() => b.engine.items().length === 1, "offer");
+  await b.engine.acceptAll();
+  await until(() => a.engine.items()[0].state === "done", "sent");
+  b.engine.clearFinished();
+  assert.equal(b.engine.items().length, 0);
+  const receipt = b.saved.find((it) => it.state === "done")!;
+  assert.ok(receipt);
+  let reply: unknown;
+  const fresh = createTransfers({
+    durableQueue: true, send: (m) => { reply = m; },
+    channel: () => ({ bufferedAmount: 0, send: () => {} }), channelOpen: () => true,
+    maxMessage: () => 65562, chooseSink: async () => { throw new Error("must not create another file"); },
+    save: () => {}, changed: () => {}, warn: () => {},
+  });
+  fresh.restore(receipt, {});
+  await fresh.onMessage(JSON.stringify({ t: "resume", id: receipt.id, fp: receipt.fp }));
+  assert.deepEqual(reply, { t: "saved", id: receipt.id });
+  assert.equal(fresh.items().length, 0);
+});
+
+function recoveryEngine(sink?: Sink) {
+  const sent: any[] = [], snapshots: Saved[][] = [], warnings: string[] = [];
+  let commit: (() => Promise<void>) | undefined;
+  const engine = createTransfers({
+    durableQueue: true, send: (m) => sent.push(m),
+    channel: () => ({ bufferedAmount: 0, send: (m) => sent.push(typeof m === 'string' ? JSON.parse(m) : m) }),
+    channelOpen: () => true, maxMessage: () => 65562,
+    chooseSink: async () => { if (sink) return sink; throw new Error('unexpected new sink'); },
+    save: (items) => { snapshots.push(structuredClone(items)); return commit?.(); },
+    changed: () => {}, warn: (text) => warnings.push(text),
+  });
+  const saved: Saved = { id: newTransferId(), dir: 'receive', name: 'kept.bin', size: 5, type: 'application/octet-stream', fp: 'a'.repeat(64), state: 'paused', root: '/chosen/folder' };
+  return { engine, saved, sent, snapshots, warnings, setCommit: (fn?: () => Promise<void>) => { commit = fn; } };
+}
+
+test('cancellation commits before notification or cleanup and survives restart and clearing history', async () => {
+  const x = recoveryEngine(), sink = new FakeSink();
+  x.engine.restore(x.saved, { sink, offset: 2 });
+  let release!: () => void;
+  x.setCommit(() => new Promise<void>((resolve) => { release = resolve; }));
+  const cancelled = x.engine.cancel(x.saved.id);
+  assert.equal(x.snapshots.at(-1)![0].state, 'cancelled');
+  assert.equal(x.snapshots.at(-1)![0].root, '/chosen/folder');
+  assert.equal(sink.aborted, false);
+  assert.deepEqual(x.sent, []);
+  release();
+  x.setCommit();
+  assert.equal(await cancelled, true);
+  assert.equal(sink.aborted, true);
+  assert.deepEqual(x.sent, [{ t: 'cancel', id: x.saved.id }]);
+  const fresh = recoveryEngine();
+  fresh.engine.restore(x.snapshots.at(-1)![0], {});
+  fresh.engine.clearFinished();
+  await fresh.engine.onMessage(JSON.stringify({ t: 'resume', id: x.saved.id, fp: x.saved.fp }));
+  await fresh.engine.onMessage(JSON.stringify({ t: 'meta', ...x.saved }));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(fresh.sent.every((m) => m.t === 'cancel' && m.id === x.saved.id));
+  assert.equal(fresh.engine.items().length, 0);
+});
+
+test('failed cancellation commit preserves the partial and can be retried', async () => {
+  const x = recoveryEngine(), sink = new FakeSink();
+  x.engine.restore(x.saved, { sink, offset: 2 });
+  x.setCommit(async () => { throw new Error('disk full'); });
+  assert.equal(await x.engine.cancel(x.saved.id), false);
+  assert.equal(sink.aborted, false);
+  assert.deepEqual(x.sent, []);
+  assert.equal(x.engine.hasUnfinished(), true);
+  x.setCommit();
+  assert.equal(await x.engine.cancel(x.saved.id), true);
+  assert.equal(sink.aborted, true);
+});
+
+test('cancellation supersedes a stale paused journal after restoration', async () => {
+  const x = recoveryEngine(), sink = new FakeSink();
+  x.engine.restore(x.saved, { sink, offset: 2 });
+  x.engine.restore({ ...x.saved, state: 'cancelled' }, {});
+  await until(() => sink.aborted, 'stale partial cleanup');
+  x.engine.onOpen(true);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(x.engine.hasUnfinished(), false);
+  assert.ok(x.sent.every((m) => m.t === 'cancel'));
+});
+
+test('restoring a queue persists one complete snapshot with all files and outcomes', async () => {
+  const x = recoveryEngine();
+  const other = { ...x.saved, id: newTransferId(), dir: 'send' as const, path: '/chosen/source' };
+  await x.engine.restoreAll([
+    { saved: x.saved, sink: new FakeSink(), offset: 2 },
+    { saved: other },
+    { saved: { ...x.saved, id: newTransferId(), state: 'cancelled' } },
+  ]);
+  assert.equal(x.snapshots.length, 1);
+  assert.equal(x.snapshots[0].length, 3);
+  assert.equal(x.snapshots[0].find((i) => i.id === other.id)?.path, '/chosen/source');
+});
+
+test('keeping a transfer drains writes before checkpointing and can resume on the same channel', async () => {
+  const x = recoveryEngine(), sink = new FakeSink();
+  let checkpointed = false;
+  sink.checkpoint = async () => { checkpointed = true; };
+  x.engine.restore(x.saved, { sink, offset: 2 });
+  await x.engine.onMessage(JSON.stringify({ t: 'resume', id: x.saved.id, fp: x.saved.fp }));
+  await x.engine.onMessage(frame(x.saved.id, new Uint8Array([1]).buffer));
+  await x.engine.onLost();
+  assert.equal(checkpointed, true);
+  assert.equal(sink.aborted, false);
+  x.engine.onOpen(true);
+  await x.engine.onMessage(JSON.stringify({ t: 'resume', id: x.saved.id, fp: x.saved.fp }));
+  assert.deepEqual(x.sent.at(-1), { t: 'resume-at', id: x.saved.id, bytes: 3 });
+});
+
+test('cancel all waits for cancellations already committing', async () => {
+  const x = recoveryEngine(), sink = new FakeSink();
+  x.engine.restore(x.saved, { sink, offset: 2 });
+  let release!: () => void;
+  x.setCommit(() => new Promise<void>((resolve) => { release = resolve; }));
+  const one = x.engine.cancel(x.saved.id);
+  let finished = false;
+  const all = x.engine.cancelAll().then((ok) => { finished = true; return ok; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(finished, false);
+  x.setCommit(); release();
+  assert.equal(await one, true);
+  assert.equal(await all, true);
+});
+
+test('cancellation waits for an in-flight finalization and cannot send saved afterwards', async () => {
+  const sink = new FakeSink(), x = recoveryEngine(sink);
+  let release!: () => void, closing = false;
+  sink.close = async () => { closing = true; await new Promise<void>((resolve) => { release = resolve; }); };
+  await x.engine.onMessage(JSON.stringify({ t: 'meta', ...x.saved }));
+  await x.engine.accept(x.saved.id);
+  await x.engine.onMessage(frame(x.saved.id, new Uint8Array([1, 2, 3, 4, 5]).buffer));
+  await x.engine.onMessage(JSON.stringify({ t: 'done', id: x.saved.id }));
+  await until(() => closing, 'sink finishing');
+  const cancelled = x.engine.cancel(x.saved.id);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(sink.aborted, false, 'cleanup must not race the finalizer');
+  release();
+  assert.equal(await cancelled, true);
+  assert.equal(sink.aborted, true);
+  assert.ok(!x.sent.some((m) => m.t === 'saved'));
+  assert.equal(x.snapshots.at(-1)![0].state, 'cancelled');
+});
+
+test('a completed receipt answers a replayed offer without creating another destination', async () => {
+  const x = recoveryEngine();
+  x.engine.restore({ ...x.saved, state: 'done' }, {});
+  await x.engine.onMessage(JSON.stringify({ t: 'meta', ...x.saved }));
+  assert.deepEqual(x.sent, [{ t: 'saved', id: x.saved.id }]);
+  assert.equal(x.engine.items().length, 0);
+  await x.engine.onMessage(JSON.stringify({ t: 'meta', ...x.saved, fp: 'b'.repeat(64) }));
+  assert.equal(x.sent.at(-1).t, 'reject');
 });

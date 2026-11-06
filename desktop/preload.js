@@ -7,11 +7,14 @@ const info = ipcRenderer.sendSync("app:info");
 
 contextBridge.exposeInMainWorld("streamdropApp", {
   ...info,
-  pathForFile: (file) => webUtils.getPathForFile(file),
+  pathForFile: (file) => {
+    const p = webUtils.getPathForFile(file);
+    return p ? ipcRenderer.sendSync("file:grant", p) : "";
+  },
   record: {
     getItem: () => ipcRenderer.sendSync("record:get"),
-    setItem: (_, value) => ipcRenderer.send("record:set", value),
-    removeItem: () => ipcRenderer.send("record:set", null),
+    setItem: (_, value) => ipcRenderer.invoke("record:set", value),
+    removeItem: () => ipcRenderer.invoke("record:set", null),
   },
   devices: {
     list: call("devices:list"),
@@ -20,9 +23,11 @@ contextBridge.exposeInMainWorld("streamdropApp", {
     update: call("devices:update"),
     remove: call("devices:remove"),
   },
+  receipts: { list: call("receipts:list") },
   sink: {
     open: call("sink:open"),
     write: call("sink:write"),
+    checkpoint: call("sink:checkpoint"),
     close: call("sink:close"),
     abort: call("sink:abort"),
     offset: call("sink:offset"),

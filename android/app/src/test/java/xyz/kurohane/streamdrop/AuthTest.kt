@@ -125,4 +125,33 @@ class AuthTest {
         val (_, b) = link(null, key, requiredB = true)
         assertEquals("auth", b.failed)
     }
+
+    @Test fun helloRearmsTheProofTimeoutAndOldTimersCannotCloseIt() {
+        val timers = ArrayList<Pair<Long, () -> Unit>>()
+        val e = End()
+        val g = Gate("answer", "pair", key, false, emptyList(), { f }, {}, { e.delivered.add(it) },
+            { ok, _ -> e.verified = ok }, { e.failed = it },
+            scheduleTimeout = { delay, task -> timers.add(delay to task) })
+        g.start()
+        assertEquals(3000L, timers[0].first)
+        g.message(Data.Text(msg("hello", "v" to 2, "min" to 1, "caps" to listOf("pair"))))
+        assertEquals(15000L, timers[1].first)
+        timers[0].second()
+        assertNull(e.failed)
+        timers[1].second()
+        assertEquals("auth", e.failed)
+        assertTrue(e.delivered.isEmpty())
+    }
+
+    @Test fun oversizedMessagesAreNeverDelivered() {
+        for (data in listOf(Data.Text("名".repeat(11000)), Data.Binary(ByteArray(65563)))) {
+            val e = End()
+            val g = Gate("answer", "pair", key, true, emptyList(), { f }, {}, { e.delivered.add(it) },
+                { ok, _ -> e.verified = ok }, { e.failed = it })
+            g.start()
+            g.message(data)
+            assertEquals("auth", e.failed)
+            assertTrue(e.delivered.isEmpty())
+        }
+    }
 }

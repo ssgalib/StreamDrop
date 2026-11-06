@@ -1,12 +1,13 @@
 import { type Connection } from "./connection";
 import { createListener, createPairing, parseName, savedKeys } from "./saved";
-import { fingerprint, type FileInfo, type Meta, type Sink } from "./transfer";
-import type { Item, Saved, Transfers } from "./transfers";
+import { fingerprint, parseMeta, type FileInfo, type Meta, type Sink } from "./transfer";
+import type { Item, Saved, Transfers, Restored } from "./transfers";
 
 // The desktop app: what only it can do, on top of the page. window.streamdropApp comes from desktop/preload.js
 // and is absent in a browser. Nothing here runs on the website.
 export type Device = { roomId: string; name: string; addedAt: number; lastSeen: number; alwaysAccept: boolean };
 type Entry = { path: string; name: string; rel: string; size: number; mtime: number };
+type RecoveryRecord = { session: string; p?: string; items: Saved[]; held?: boolean };
 
 export type Bridge = {
   signalUrl: string;
@@ -14,7 +15,12 @@ export type Bridge = {
   deviceName: string;
   canSave: boolean; // false when this computer has no safe place for keys
   pathForFile(file: File): string;
-  record: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+  record: {
+    getItem(key: string): string | null;
+    setItem(key: string, value: string): Promise<void>;
+    removeItem(key: string): Promise<void>;
+  };
+  receipts: { list(roomId: string): Promise<Saved[]> };
   devices: {
     list(): Promise<Device[]>;
     add(d: { roomId: string; name: string; k: Uint8Array }): Promise<void>;
@@ -23,10 +29,11 @@ export type Bridge = {
     remove(roomId: string): Promise<void>;
   };
   sink: {
-    open(s: { id: string; name: string; rel?: string; size: number; subdir?: string; resume?: boolean }): Promise<{ offset: number }>;
+    open(s: { id: string; name: string; rel?: string; size: number; subdir?: string; resume?: boolean; root?: string }): Promise<{ offset: number; root: string }>;
     write(id: string, data: ArrayBuffer): Promise<void>;
+    checkpoint(id: string): Promise<void>;
     close(id: string): Promise<void>;
-    abort(id: string): Promise<void>;
+    abort(id: string, root?: string): Promise<void>;
     offset(id: string): Promise<number>;
     clean(): Promise<void>;
   };
@@ -55,20 +62,22 @@ const ALWAYS_ACCEPT_LIMIT = 2 * 1024 ** 3;
 let subdir: string | undefined; // the folder for files accepted without asking
 
 export function appSinks(b: Bridge) {
-  const sink = (id: string): Sink => ({
+  const sink = (id: string, root: string): Sink => ({
+    root,
     resumable: true,
     write: (data) => b.sink.write(id, data),
+    checkpoint: () => b.sink.checkpoint(id),
     close: () => b.sink.close(id),
-    abort: () => b.sink.abort(id),
+    abort: () => b.sink.abort(id, root),
   });
   return {
     async chooseSink(m: FileInfo & Pick<Meta, "id" | "rel">) {
-      await b.sink.open({ id: m.id, name: m.name, rel: m.rel, size: m.size, subdir });
-      return sink(m.id);
+      const { root } = await b.sink.open({ id: m.id, name: m.name, rel: m.rel, size: m.size, subdir });
+      return sink(m.id, root);
     },
-    async openParts(id: string, name: string) {
-      const { offset } = await b.sink.open({ id, name, size: 0, resume: true });
-      return { sink: sink(id), offset };
+    async openParts(id: string, name: string, _type?: string, savedRoot?: string) {
+      const { offset, root } = await b.sink.open({ id, name, size: 0, resume: true, root: savedRoot });
+      return { sink: sink(id, root), offset };
     },
     partsOffset: (id: string) => b.sink.offset(id),
     discardParts: (id: string) => b.sink.abort(id),
@@ -97,6 +106,7 @@ type Context = {
   setStatus(text: string): void;
   setSessionState(s: "open" | "paused" | "ended"): void;
   view(v: "home" | "session"): void;
+  records(): RecoveryRecord | null;
 };
 
 export async function initApp(b: Bridge, c: Context) {
@@ -112,9 +122,11 @@ export async function initApp(b: Bridge, c: Context) {
   let peerName: string | undefined;
   let pairing: ReturnType<typeof createPairing> | undefined;
   let lastActive = Date.now();
+  let held = false;
   let wait: ReturnType<typeof setTimeout> | undefined;
   const cooling = new Map<string, number>(); // room id -> when a failed proof may be retried
   const notified = new Set<string>();
+  let resumeRecord: ((rec: RecoveryRecord) => Promise<boolean>) | undefined;
 
   const listener = createListener(b.signalUrl, () => devices.map((d) => d.roomId), onRing);
 
@@ -127,10 +139,14 @@ export async function initApp(b: Bridge, c: Context) {
   async function connect(d: Device, resuming = false) {
     if (Date.now() < (cooling.get(d.roomId) ?? 0)) return c.showError(`Couldn't verify ${d.name}. Try again in a moment.`);
     current = d;
+    for (const receipt of await b.receipts.list(d.roomId)) {
+      if (parseMeta(receipt) && (receipt.state === "cancelled" || receipt.state === "done" && receipt.dir === "receive")) transfers.restore(receipt, {});
+    }
     subdir = d.alwaysAccept ? d.name : undefined;
     const { ka } = await savedKeys(await b.devices.key(d.roomId));
     c.showError("");
     conn.connectSaved(d.roomId, ka, resuming);
+    await transfers.persist();
     clearTimeout(wait);
     wait = setTimeout(() => {
       if (!conn.isOpen()) c.ended(`${d.name} didn't answer.`);
@@ -139,8 +155,12 @@ export async function initApp(b: Bridge, c: Context) {
 
   function onRing(id: string) {
     const d = devices.find((x) => x.roomId === id);
+    const rec = c.records();
     // Busy covers our own call too: the server rings both devices of a pair.
-    if (d && conn.phase === "idle" && Date.now() >= (cooling.get(id) ?? 0)) void connect(d);
+    if (d && (!held || rec?.session === id) && conn.phase === "idle" && Date.now() >= (cooling.get(id) ?? 0)) {
+      const attempt = rec?.held && rec.session === id ? resumeRecord?.({ ...rec, held: false }) : connect(d, transfers.hasUnfinished());
+      void attempt?.catch(() => c.showError("Couldn't resume these transfers. Reconnect the drive and try Resume."));
+    }
   }
 
   function row(d: Device) {
@@ -193,6 +213,7 @@ export async function initApp(b: Bridge, c: Context) {
         try { conn.send({ t: "unpair" }); } catch { /* it finds out when its proof fails */ }
       }
       await b.devices.remove(d.roomId);
+      if (current?.roomId === d.roomId) c.ended("This device was removed.");
       await reload();
     });
     li.append(name, go, rename, remove, label);
@@ -264,7 +285,6 @@ export async function initApp(b: Bridge, c: Context) {
   $("#app-settings").hidden = false;
   $("#send-folder").hidden = false;
   drawDevices();
-  listener.update();
 
   // Closing an idle connection is not an error: the pair stays, and the next send reconnects.
   setInterval(() => {
@@ -273,7 +293,15 @@ export async function initApp(b: Bridge, c: Context) {
     setTimeout(() => c.ended("Closed the idle connection. It reconnects when you next connect."), 150);
   }, 5000);
 
-  return {
+  const hooks = {
+    ready() { listener.update(); },
+    setHeld(value: boolean) { held = value; },
+    async resumeConnection(roomId: string) {
+      const d = devices.find((x) => x.roomId === roomId);
+      if (!d) throw new Error("This device is no longer saved. Connect it again.");
+      held = false;
+      await connect(d, true);
+    },
     peerName: () => current?.name ?? undefined,
     savedRoom: () => current?.roomId, // after a restart, a saved device is found this way, even if it was saved mid-session
     listeners(n: number) {
@@ -300,7 +328,7 @@ export async function initApp(b: Bridge, c: Context) {
         return true;
       }
       if (m.t === "unpair") {
-        if (current) void b.devices.remove(current.roomId).then(reload);
+        if (current) void b.devices.remove(current.roomId).then(() => { c.ended("This device was removed."); return reload(); });
         return true;
       }
       return pairing?.message(m) ?? false;
@@ -309,6 +337,7 @@ export async function initApp(b: Bridge, c: Context) {
       if (current) cooling.set(current.roomId, Date.now() + AUTH_COOLDOWN);
     },
     ended() {
+      transfers.forgetReceipts();
       clearTimeout(wait);
       current = undefined;
       peerName = undefined;
@@ -336,23 +365,51 @@ export async function initApp(b: Bridge, c: Context) {
     },
     sendFolders: (files: File[]) => sendPaths(files.map((f) => b.pathForFile(f)).filter(Boolean)),
     // After a restart: carry on with a saved device by ourselves. Ad hoc connections go through the page's usual prompt.
-    async resume(rec: { session: string; items: Saved[] } | null) {
+    async resume(rec: RecoveryRecord | null) {
+      held = !!rec?.held;
+      if (held) return false;
       const d = rec && devices.find((x) => x.roomId === rec.session);
-      if (!rec || !d || !rec.items.length) return false;
+      if (!rec || !rec.items.length) return false;
       const sinks = appSinks(b);
-      for (const it of rec.items) {
-        if (it.dir === "receive") {
-          const { sink, offset } = await sinks.openParts(it.id, it.name);
-          transfers.restore(it, { sink, offset });
+      const entries: Restored[] = [];
+      const outcomes = (await b.receipts.list(rec.session)).filter((r) => parseMeta(r) && (r.state === "cancelled" || r.state === "done" && r.dir === "receive"));
+      const recovered = new Map(rec.items.map((it) => [it.id, it]));
+      for (const outcome of outcomes) recovered.set(outcome.id, outcome);
+      for (const it of recovered.values()) {
+        if (it.state === "cancelled") {
+          if (it.dir === "receive") await b.sink.abort(it.id, it.root);
+          entries.push({ saved: it });
           continue;
         }
-        const st = it.path ? await b.file.stat(it.path) : null;
-        if (!st || st.size !== it.size) continue; // moved or changed: the other device is told when it asks
-        const file = pathFile({ path: it.path!, name: it.name, size: it.size, mtime: st.mtime, type: it.type });
-        if ((await fingerprint(file)) === it.fp) transfers.restore(it, { file });
+        if (it.state === "done" || it.state === "offered" && it.dir === "receive") {
+          entries.push({ saved: it });
+          continue;
+        }
+        if (it.dir === "receive") {
+          const { sink, offset } = await sinks.openParts(it.id, it.name, it.type, it.root);
+          entries.push({ saved: it, sink, offset });
+          continue;
+        }
+        const st = it.path ? await b.file.stat(it.path).catch(() => null) : null;
+        if (!st || st.size !== it.size) {
+          entries.push({ saved: it }); // retain its source reference so a restart never erases the rest of the queue
+          c.showError(`Couldn't reopen ${it.name}. Restore the original file at its previous location and restart StreamDrop.`);
+          continue;
+        }
+        const file = pathFile({ path: it.path!, name: it.name, size: it.size, mtime: st.mtime, type: it.type, rel: it.rel });
+        if ((await fingerprint(file).catch(() => null)) === it.fp) entries.push({ saved: it, file });
+        else {
+          entries.push({ saved: it });
+          c.showError(`${it.name} has changed. Restore the original file and restart StreamDrop.`);
+        }
       }
-      await connect(d, true);
+      await transfers.restoreAll(entries);
+      if ([...recovered.values()].every((it) => it.state === "done" || it.state === "cancelled")) return false;
+      if (d) await connect(d, true);
+      else conn.rejoin(rec.session, rec.p);
       return true;
     },
   };
+  resumeRecord = hooks.resume;
+  return hooks;
 }

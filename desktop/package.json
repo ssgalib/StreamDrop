@@ -21,7 +21,7 @@
   },
   "build": {
     "appId": "xyz.kurohane.streamdrop",
-    "files": ["main.js", "preload.js", "files.js", "icon.png", "ui/**"],
+    "files": ["main.js", "preload.js", "files.js", "durable.js", "icon.png", "ui/**"],
     "linux": { "target": ["AppImage", "deb"], "category": "Network", "icon": "icon.png", "maintainer": "StreamDrop" },
     "win": { "target": ["nsis"] },
     "mac": { "target": ["dmg"] }

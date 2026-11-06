@@ -589,6 +589,9 @@ progress.is-frozen::-moz-progress-bar {
 }
 
 .ended { display: grid; gap: var(--space-3); justify-items: start; }
+#disconnect-choice { max-width: min(36rem, calc(100vw - 2rem)); color: var(--card-foreground); }
+#disconnect-choice::backdrop { background: oklch(0 0 0 / 50%); }
+#disconnect-choice .actions { margin-top: var(--space-4); }
 .ended .card-desc { margin: 0; }
 
 /* The one big thing you can do: send files. A whole label, so a click anywhere opens the picker. */

@@ -282,3 +282,69 @@ Chosen with the user: pair by link, QR or code (no same-network discovery, for p
 # plan_3.md: not started
 - M3 Android app: UI, reconnect, resume, SAF and MediaStore, share sheet, Keystore. Most can be built on the emulator.
 - M4 device matrix depends on Android. M5 needs accounts, signing and decisions in section 7.
+
+# plan_4.md execution: recovery and validation foundation (2026-11-06)
+
+Implementation has started. **The complete plan is not implemented, and M0/M1 are not yet complete.** No push, release, production probe, SSH or deployment was performed. No `.env` was read. Owner choices still use the provisional defaults in `plan_4.md`.
+
+## Implemented locally
+
+- Transfer validation: ACKs must be monotonic safe integers no greater than sent bytes; binary/control size limits; invalid transport chunk sizes fail; cancellation during asynchronous source reads sends no late chunk.
+- Receive queues share a 32 MiB payload budget across files, with a separate outstanding-frame limit. Empty frames do not allocate disk write tasks. Disk failure stops queued writes. Repeated `done` and late frames cannot finalize a receiver twice.
+- TypeScript auth gate bounds input bytes and callback count before its asynchronous queue, in addition to its held-message limits.
+- Decline all remembers the batch decision, so it covers offers announced after the first 100. A new 500-file regression covers this.
+- App records have a versioned local schema and retain unaccepted offers, batch/relative-path metadata and original receive roots. Browser records retain the existing manual recovery behaviour. Unsupported schemas are rejected; larger records are no longer silently truncated at 500 entries.
+- App offers and acceptances await journal commits. Completion receipts commit before `saved`, survive Clear finished and are retained separately by saved-device room for 30 days, with a 10,000-receipt safety limit. In-memory receipts are cleared when changing saved devices.
+- Desktop JSON commits use exclusive private temporary files, file sync, atomic replacement and directory sync on platforms where Node supports it. Short data writes are retried. Windows directory sync is not implemented by Node here and remains a platform durability caveat.
+- Desktop finalization records the allocated destination before publishing, and keeps a sidecar so restart after rename can recover without making another copy. Existing linked destination/staging directories are refused. This does **not** solve hostile local directory-replacement races with OS-specific handle-relative APIs.
+- Desktop cleanup preserves partials referenced by the current journal. Partial destinations remain pinned when the Downloads setting changes.
+- Renderer file read/stat/walk access is restricted to user-selected/restored sources; reads have a 1 MiB range limit. Journal records cannot grant arbitrary source/destination paths. IPC handlers validate the main bundled frame.
+- Removing a saved device closes its active connection. Pair-storage errors reach the pairing UI; the main process enforces the 32-device registration limit.
+- Kotlin auth has byte limits and generation-scoped hello/proof timers. Receiving hello rearms a full 15-second proof timeout; an old timer cannot fail the new phase. The spike no longer advertises saved-device support and closes its transport after proof failure. It is still a throwaway spike, not the Android product app.
+- Hidden Electron tests use unpackaged-only offscreen rendering because this host stopped producing the animation frames Playwright needs for actionability in hidden native windows. Packaged apps ignore that test flag. Test startup accepts that restored work can already have hidden Home.
+- Protocol documentation records the implementation limits without changing wire v2/min1.
+
+## Verification and scope
+
+- Passed: web build/type checking and **92 web unit tests**; **23 desktop file/durability tests**; **13 Kotlin vector/auth tests**; Go vet and race tests.
+- Passed against the final frozen source tree: **15 Electron e2e** and **35 Chromium web e2e**. This includes both-app SIGKILL recovery at 300 MiB, newly queued folder recovery, connected-device removal, IPC path refusal, browser reload recovery, network-channel cuts and signaling-server restart. The web run excluded Android hardware and pinned-old-build tests; Firefox/Safari were not run.
+- Earlier browser runs were contaminated by editing web source while Vite served the tests: hot reload reset active transfer pages. Individual resume reruns passed. Do not count the contaminated runs as release validation.
+- Desktop file tests still emit existing FileHandle garbage-collection warnings from crash-simulation tests that intentionally leave old-process handles open; this is not a measured power-loss result.
+- A Pixel is attached. It was not installed, cleared, force-stopped or modified in this execution pass. Kotlin tests used Gradle's existing cache with approved access for its lock/cache writes.
+
+## Remaining, in dependency order
+
+1. M0 owner/hardware/reviewer decisions; actual keyring round trips; Android network/storage/timeout risk probes. The local workspace has about 13 GiB free and `/tmp` is RAM-backed: do not allocate ordinary 20 GiB fixtures here.
+2. Continue M1: finish source reselection and receipt/partial expiry UI, validate recovery for more than one retained device independently of visible history, add a safe publication fallback for filesystems without hard links, and strengthen filesystem race protection. Real Windows/macOS durability, power-loss behaviour and OS integrations remain untested. The cancellation, Keep/Discard and process-death work is recorded below.
+3. M2–M4: replace the spike with the Kotlin transfer engine, reconnect controller, service, SAF/spooling/MediaStore/Keystore persistence, Compose UI, pairing/share/notifications and conformance tests. None of that product work is claimed complete by the auth changes above.
+4. M5–M8: desktop packaging/signing/keyring matrix, website capability copy, release/update tooling, immutable deployment/rollback, all-platform interop, external review and 20 GiB gates. TURN/Stored remain off; no automatic updates exist.
+
+# plan_4.md M1: durable cancellation, kept transfers and crash boundaries (2026-11-06)
+
+## Implemented and tested locally
+
+- Cancellation is a persistent terminal outcome. The client stops new reads/frame delivery, commits the outcome ledger and journal, then notifies the other device and settles pending writes/finalization before removing partial files. A failed cancellation commit preserves the partial and allows retry. Discard waits for cancellations already committing.
+- Cancellation outcomes survive clearing history and override stale active journals. Startup retries partial cleanup from the outcome ledger even if the transfer journal has been cleared. Replay of `meta` or `resume` cannot resurrect a cancelled transfer. A completion receipt answers a repeated matching offer without creating another destination; reused ids with different metadata are refused.
+- Disconnect with unfinished files presents **Keep unfinished**, **Discard**, and **Stay connected**. Keep checkpoints desktop/OPFS sinks and retains the queue and proof key reference. An ordinary remote disconnect or authentication failure no longer deletes partials automatically. Paused rows say **Kept for later** when intentionally held.
+- Explicitly kept app transfers remain stopped after restart. A saved-device call can restore and resume the other device's held queue. Temporary app connections retain their invite proof and can resume when both sides resume them. Browser pages can resume in memory without choosing their files again; existing browser reload/storage limitations still apply.
+- App restoration prepares the queue and merges committed terminal outcomes before restoring all entries together, suppressing intermediate journal writes. Missing source references remain in the queue. Recovery failures display an error without clearing the journal. Resuming an absent receive volume does not create empty replacement directories.
+- Publication no longer creates an empty destination reservation and replaces it. A complete staged inode is linked into the destination with no overwrite, its directory is synced, completion is recorded, and the staging link is removed. Recovery detects an already published inode and produces one output. Initial crashes before acceptance can recover uncommitted staging files safely.
+- Added real SIGKILL worker tests at 21 JSON/data/publication boundaries and three additional collision/crash cases. Each restarts a fresh sink, checks the exact durable offset, compares SHA-256, checks only one output and verifies existing files remain unchanged.
+- Added regressions for cancellation commit failure, cancellation racing finalization, queue restoration, pending cancellation waits, held native/browser transfers, offline Discard, and a cancellation ledger newer than an active journal.
+- Updated [protocol](docs/protocol.md), [recovery details](docs/recovery.md) and README. No new wire messages or protocol version bump.
+
+## Verification
+
+- Web build/type checking and **100 web unit tests** passed.
+- **48 desktop file/durability/crash tests** passed.
+- **19 Electron end-to-end tests** passed, including the existing both-app SIGKILL transfer and four new recovery scenarios.
+- **36 Chromium web end-to-end tests** passed, including reload recovery, server restart, explicit Discard and Keep/resume. Android hardware, pinned-old-build tests, Firefox/Safari and screen readers were not run in this pass.
+- The tests ran against a frozen source tree. An early native test timeout was fixed by checking the saved-connection paused state rather than transient “Reconnecting” text, and by avoiding cleanup calls on killed apps. A self-termination experiment in Electron's automation context was dropped; the ledger-order regression instead constructs the valid newer-ledger/older-journal disk state through the real record bridge, kills both apps externally and then restarts them. It does not claim an exact-instruction Electron kill.
+- Process death leaves the OS cache intact: this is **not** a power-loss durability result. Crash-safe publication currently requires hard-link support; unsupported filesystems need a safe fallback. Filesystem races involving malicious local directory replacement and native Windows/macOS behaviour remain unverified. M1 as a whole is still open.
+- No deployment, push, release, VPS access, Android device modification or `.env` read occurred.
+
+# Push and deployment staging (2026-11-07)
+
+- Owner requested push and deploy. Rechecked the web production build, 100 web unit tests, 48 desktop unit/file/crash tests, Go vet/race tests and deployment shell syntax; all passed. Earlier Electron/Chromium results above remain the end-to-end evidence.
+- Built the Linux amd64 server and staged it with the web production assets and existing installer at `vps:~/streamdrop-deploy/`. Remote SHA-256 matches the local server and index: `70db289cc9d81b9f1b0015cded00b60a72ec413f8ed9261c3cf10966698ac0a3` and `00ba08eb1841de6b13739720b2cd4505e6078b280992c6f3003cd061c21bb6f1` respectively.
+- Installation is pending: `sudo -n -v` reports a password is required. The owner must run `ssh -t vps 'sudo bash ~/streamdrop-deploy/install.sh'` in a real terminal. The current service is active and the public site returns HTTP 200, but its index differs from the staged build. The new build is not live yet. No `.env` file was read; TURN and Stored settings were not changed.

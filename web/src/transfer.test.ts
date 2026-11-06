@@ -251,3 +251,107 @@ test("parts sort by number, not by the order a directory lists them", () => {
   const many = Array.from({ length: 120 }, (_, i) => `p${String(i).padStart(6, "0")}`).reverse();
   assert.deepEqual(sortedPartNames(many), many.slice().reverse());
 });
+
+test("invalid ACKs cannot release the send window", async () => {
+  const ch = fakeChannel();
+  const s = createSender(new Blob([new Uint8Array(WINDOW + CHUNK)]), ch, CHUNK, () => {});
+  const run = s.run();
+  await tick();
+  for (const bad of [NaN, Infinity, -1, 1.5, WINDOW + 1]) assert.equal(s.ack(bad), false);
+  await tick();
+  assert.equal(ch.sent.length, WINDOW / CHUNK);
+  assert.equal(s.ack(CHUNK), true);
+  assert.equal(s.ack(0), false);
+  await run;
+});
+
+test("cancel during an asynchronous source read sends no late bytes", async () => {
+  let release!: (b: ArrayBuffer) => void;
+  const ch = fakeChannel();
+  const source = { size: 1, slice: () => ({ arrayBuffer: () => new Promise<ArrayBuffer>((r) => { release = r; }) }) } as unknown as Blob;
+  const s = createSender(source, ch, CHUNK, () => {});
+  const run = s.run();
+  s.cancel();
+  release(new ArrayBuffer(1));
+  await run;
+  assert.deepEqual(ch.sent, []);
+});
+
+test("oversized frames and impossible transport sizes are refused", async () => {
+  assert.equal(parseFrame(frame(ID, new ArrayBuffer(CHUNK + 1))), null);
+  for (const n of [0, -1, Infinity, CHUNK + 1]) {
+    await assert.rejects(createSender(new Blob(["x"]), fakeChannel(), n, () => {}).run(), /message size/);
+  }
+});
+
+test("receiver stops queued writes and never reports success after a disk failure", async () => {
+  let writes = 0;
+  const ch = fakeChannel();
+  const sink = { ...fakeSink(), write: async () => { writes++; throw new Error("disk failed"); } };
+  const errors: unknown[] = [];
+  const rx = createReceiver(2, sink, ch, () => {}, (e) => errors.push(e));
+  rx.chunk(new ArrayBuffer(1));
+  rx.chunk(new ArrayBuffer(1));
+  await assert.rejects(rx.done(), /disk failed/);
+  rx.chunk(new ArrayBuffer(1));
+  assert.equal(writes, 1);
+  assert.equal(errors.length, 1);
+  assert.equal(ch.sent.length, 0);
+});
+
+test("saved is sent only after the completion receipt commits", async () => {
+  let commit!: () => void;
+  const committed = new Promise<void>((resolve) => { commit = resolve; });
+  const ch = fakeChannel();
+  const sink = fakeSink();
+  const rx = createReceiver(0, sink, ch, () => {}, () => {}, 0, () => committed);
+  const done = rx.done();
+  await tick();
+  assert.equal(sink.closed, true);
+  assert.equal(ch.sent.length, 0);
+  commit();
+  await done;
+  assert.equal(JSON.parse(ch.sent[0] as string).t, "saved");
+});
+
+test("receive backlog is bounded across multiple files, not just per file", async () => {
+  const budget = { pending: 0 };
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const errors: unknown[] = [];
+  const sink = { ...fakeSink(), write: async () => { await blocked; } };
+  const a = createReceiver(WINDOW * 2, sink, fakeChannel(), () => {}, (e) => errors.push(e), 0, undefined, budget);
+  const b = createReceiver(WINDOW, sink, fakeChannel(), () => {}, (e) => errors.push(e), 0, undefined, budget);
+  for (let i = 0; i < WINDOW * 2 / CHUNK; i++) a.chunk(new ArrayBuffer(CHUNK));
+  b.chunk(new ArrayBuffer(CHUNK));
+  assert.equal(errors.length, 1);
+  assert.equal(budget.pending, WINDOW * 2);
+  release();
+  await a.flush();
+  assert.equal(budget.pending, 0);
+});
+
+test("duplicate done and late frames cannot reopen or finalize a receiver twice", async () => {
+  const sink = fakeSink(), ch = fakeChannel();
+  let closes = 0;
+  const original = sink.close;
+  sink.close = async () => { closes++; await original(); };
+  const rx = createReceiver(1, sink, ch, () => {}, () => {});
+  rx.chunk(new ArrayBuffer(1));
+  const first = rx.done();
+  rx.chunk(new ArrayBuffer(1));
+  await Promise.all([first, rx.done()]);
+  assert.equal(closes, 1);
+  assert.equal(sink.parts.length, 1);
+  assert.equal(ch.sent.length, 1);
+});
+
+test("zero-length frame floods do not queue disk writes", async () => {
+  const sink = fakeSink();
+  const budget = { pending: 0, frames: 0 };
+  const rx = createReceiver(1, sink, fakeChannel(), () => {}, () => {}, 0, undefined, budget);
+  for (let i = 0; i < 10000; i++) rx.chunk(new ArrayBuffer(0));
+  await rx.flush();
+  assert.equal(sink.parts.length, 0);
+  assert.equal(budget.frames, 0);
+});

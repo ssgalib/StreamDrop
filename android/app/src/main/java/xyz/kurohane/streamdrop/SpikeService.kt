@@ -226,7 +226,7 @@ class SpikeService : Service() {
             mode = "pair",
             key = proofKey,
             required = required,
-            caps = listOf("save"),
+            caps = emptyList(), // a spike cannot retain a saved device
             fingerprints = {
                 val l = sdpFingerprint(pc?.localDescription?.description)
                 val r = sdpFingerprint(pc?.remoteDescription?.description)
@@ -239,11 +239,16 @@ class SpikeService : Service() {
                 if (offerer) sendText(msg("session", "id" to newId()))
                 toSend?.let { offer(it) }
             },
-            failed = { Log.e(tag, "GATE failed $it") },
+            failed = {
+                Log.e(tag, "GATE failed $it")
+                dc?.close()
+                pc?.close()
+                ws?.close(1000, "authentication failed")
+            },
+            scheduleTimeout = { delay, task -> loop.schedule({ task() }, delay, TimeUnit.MILLISECONDS); Unit },
         )
         gate = g
         g.start()
-        loop.schedule({ g.timedOut() }, if (required) 15 else 3, TimeUnit.SECONDS)
     }
 
     private fun onData(d: Data) {

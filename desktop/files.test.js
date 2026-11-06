@@ -49,7 +49,7 @@ test("a file arrives under its name, and the part is gone", async (t) => {
   await s.write(ID, bytes("llo"));
   assert.equal(await s.close(ID), path.join(root, "a.txt"));
   assert.equal(await fs.readFile(path.join(root, "a.txt"), "utf8"), "hello");
-  assert.deepEqual(await fs.readdir(path.join(root, ".streamdrop")), []);
+  assert.deepEqual(await fs.readdir(path.join(root, ".streamdrop")), [`${ID}.json`]);
 });
 
 test("an existing file is never overwritten", async (t) => {
@@ -178,4 +178,70 @@ test("read returns the slice asked for, and stops at the end of the file", async
   await fs.writeFile(f, "0123456789");
   assert.equal(Buffer.from(await read(f, 2, 5)).toString(), "234");
   assert.equal(Buffer.from(await read(f, 8, 20)).toString(), "89");
+});
+
+test("receiving refuses a symlink in the destination or staging directory", async (t) => {
+  const outer = await tmp(t);
+  const root = path.join(outer, "root"), outside = path.join(outer, "outside");
+  await fs.mkdir(root); await fs.mkdir(outside);
+  await fs.symlink(outside, path.join(root, "linked"), "junction");
+  const s = createSinks(() => root);
+  await s.open({ id: ID, name: "secret", rel: "linked", size: 1 });
+  await s.write(ID, bytes("x"));
+  await assert.rejects(s.close(ID), /linked/);
+  assert.deepEqual(await fs.readdir(outside), []);
+  const root2 = path.join(outer, "root2");
+  await fs.mkdir(root2);
+  await fs.symlink(outside, path.join(root2, ".streamdrop"), "junction");
+  await assert.rejects(createSinks(() => root2).open({ id: ID2, name: "x", size: 1 }), /linked/);
+  assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test("restart after publishing can acknowledge completion without another copy", async (t) => {
+  const root = await tmp(t);
+  const first = createSinks(() => root);
+  await first.open({ id: ID, name: "once.txt", size: 5 });
+  await first.write(ID, bytes("hello"));
+  await first.close(ID);
+  const sidecar = path.join(root, ".streamdrop", `${ID}.json`);
+  const record = JSON.parse(await fs.readFile(sidecar, "utf8"));
+  delete record.published; // crash immediately after rename, before publishing the completion state
+  await fs.writeFile(sidecar, JSON.stringify(record));
+  const after = createSinks(() => root);
+  assert.deepEqual(await after.open({ id: ID, name: "ignored", size: 0, resume: true }), { offset: 5, root });
+  assert.equal(await after.close(ID), path.join(root, "once.txt"));
+  assert.deepEqual((await fs.readdir(root)).sort(), [".streamdrop", "once.txt"]);
+  assert.equal(await fs.readFile(path.join(root, "once.txt"), "utf8"), "hello");
+});
+
+test("restoring a partial keeps its original destination after settings change", async (t) => {
+  const root = await tmp(t), other = await tmp(t);
+  let setting = root;
+  const first = createSinks(() => setting);
+  await first.open({ id: ID, name: "pinned.txt", size: 1 });
+  setting = other;
+  const after = createSinks(() => setting);
+  const opened = await after.open({ id: ID, name: "pinned.txt", size: 0, resume: true, root });
+  assert.equal(opened.root, root);
+  await after.write(ID, bytes("x"));
+  assert.equal(await after.close(ID), path.join(root, "pinned.txt"));
+  assert.deepEqual(await fs.readdir(other), []);
+  await first.abort(ID);
+});
+
+test("cleanup retains old partials referenced by the app journal", async (t) => {
+  const root = await tmp(t), first = createSinks(() => root);
+  await first.open({ id: ID, name: "waiting.bin", size: 1 });
+  const dir = path.join(root, ".streamdrop");
+  for (const ext of ['json', 'part']) await fs.utimes(path.join(dir, `${ID}.${ext}`), new Date(0), new Date(0));
+  const after = createSinks(() => root);
+  await after.clean([ID]);
+  assert.equal((await fs.readdir(dir)).length, 2);
+  await first.abort(ID);
+});
+
+test('resuming an unavailable volume never creates a replacement directory', async (t) => {
+  const parent = await tmp(t), missing = path.join(parent, 'removed-volume');
+  await assert.rejects(createSinks(() => missing).open({ id: ID, name: 'kept.bin', size: 5, resume: true }));
+  await assert.rejects(fs.stat(missing), { code: 'ENOENT' });
 });

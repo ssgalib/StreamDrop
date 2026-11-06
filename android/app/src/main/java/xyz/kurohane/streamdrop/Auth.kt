@@ -14,6 +14,8 @@ import org.json.JSONObject
 const val VERSION = 2
 const val MIN_VERSION = 1
 private const val MAX_HELD = 256
+private const val MAX_CONTROL_BYTES = 32 * 1024
+private const val MAX_HELD_BYTES = 16 * 1024 * 1024
 private const val B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 private val ID_RE = Regex("^[A-Z2-7]{26}$")
 
@@ -150,6 +152,7 @@ class Gate(
     private val deliver: (Data) -> Unit,
     private val passed: (Boolean, List<String>) -> Unit,
     private val failed: (String) -> Unit,
+    private val scheduleTimeout: (Long, () -> Unit) -> Unit = { _, _ -> },
 ) {
     private enum class State { HELLO, AUTH, OPEN, CLOSED }
 
@@ -157,10 +160,23 @@ class Gate(
     private var t: ByteArray? = null
     private var peerCaps = emptyList<String>()
     private val held = ArrayList<Data>()
+    private var heldBytes = 0
+    private var timerGeneration = 0
+    private var started = false
     private val mine = randomBytes(32)
     private val other = if (role == "offer") "answer" else "offer"
 
-    fun start() = send(msg("hello", "v" to VERSION, "min" to MIN_VERSION, "caps" to (if (key != null) listOf(mode) else emptyList()) + caps))
+    fun start() {
+        if (started || state == State.CLOSED) return
+        started = true
+        send(msg("hello", "v" to VERSION, "min" to MIN_VERSION, "caps" to (if (key != null) listOf(mode) else emptyList()) + caps))
+        arm(if (required) 15_000 else 3_000)
+    }
+
+    private fun arm(delay: Long) {
+        val generation = ++timerGeneration
+        scheduleTimeout(delay) { if (generation == timerGeneration) timedOut() }
+    }
 
     fun timedOut() {
         if (state == State.HELLO) noHello() else if (state == State.AUTH) fail("auth")
@@ -168,13 +184,17 @@ class Gate(
 
     fun close() {
         state = State.CLOSED
+        timerGeneration++
         held.clear()
+        heldBytes = 0
     }
 
     private fun fail(reason: String) {
         if (state == State.CLOSED) return
         state = State.CLOSED
+        timerGeneration++
         held.clear()
+        heldBytes = 0
         runCatching { send(if (reason == "upgrade") msg("bye", "reason" to reason, "min" to MIN_VERSION) else msg("bye", "reason" to reason)) }
         failed(reason)
     }
@@ -182,6 +202,8 @@ class Gate(
     private fun pass(verified: Boolean) {
         val waiting = held.toList()
         held.clear()
+        heldBytes = 0
+        timerGeneration++
         state = State.OPEN
         passed(verified, peerCaps)
         waiting.forEach(deliver)
@@ -192,6 +214,14 @@ class Gate(
 
     fun message(data: Data) {
         if (state == State.CLOSED) return
+        val bytes = when (data) {
+            is Data.Text -> {
+                if (data.text.length > MAX_CONTROL_BYTES) return fail("auth")
+                data.text.toByteArray(Charsets.UTF_8).size
+            }
+            is Data.Binary -> data.bytes.size
+        }
+        if (bytes > if (data is Data.Text) MAX_CONTROL_BYTES else 65_562) return fail("auth")
         if (state == State.OPEN) return deliver(data)
         val m = (data as? Data.Text)?.let { runCatching { JSONObject(it.text) }.getOrNull() }
         when (m?.optString("t")) {
@@ -204,7 +234,8 @@ class Gate(
             noHello() // ordered channel: anything before a hello means none is coming
             return message(data)
         }
-        if (held.size >= MAX_HELD) return fail("auth")
+        if (held.size >= MAX_HELD || heldBytes + bytes > MAX_HELD_BYTES) return fail("auth")
+        heldBytes += bytes
         held.add(data)
     }
 
@@ -217,6 +248,7 @@ class Gate(
         peerCaps = (0 until theirCaps.length()).mapNotNull { theirCaps.opt(it) as? String }
         if (key != null && mode in peerCaps) {
             state = State.AUTH
+            arm(15_000)
             return send(msg("auth-n", "mode" to mode, "n" to b64u(mine)))
         }
         if (required) return fail("auth")

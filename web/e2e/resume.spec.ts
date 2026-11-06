@@ -41,10 +41,17 @@ async function start(a: Page, b: Page) {
   await row(b, NAME).locator(".accept").click();
 }
 
-async function expectDownloadMatches(b: Page, trigger: () => Promise<void>) {
+async function expectDownloadMatches(b: Page, trigger: () => Promise<void>, a?: Page) {
   const download = b.waitForEvent("download", { timeout: 120_000 });
   await trigger();
-  expect(await shaFile(await (await download).path())).toBe(originalSha);
+  try {
+    expect(await shaFile(await (await download).path())).toBe(originalSha);
+  } catch (err) {
+    for (const [name, p] of [["receiver", b], ["sender", a]] as const) {
+      if (p) console.error(name, await p.locator("#peer-state").textContent(), await p.locator("#activity").innerText(), await p.locator("#error").textContent());
+    }
+    throw err;
+  }
 }
 
 test("connection drops mid-transfer with both tabs open: resumes by itself", async () => {
@@ -78,7 +85,7 @@ test("receiver reloads at 50% on OPFS parts: Resume continues, file identical", 
     expect(shown).toContain(NAME);
     const pct = parseInt(shown.match(/(\d+)% saved/)![1]);
     expect(pct).toBeGreaterThan(0); // closed 64 MiB parts survived the reload
-    await expectDownloadMatches(b, () => b.locator("#resume").click());
+    await expectDownloadMatches(b, () => b.locator("#resume").click(), a);
     await expect(row(a, NAME)).toContainText("Sent", { timeout: 30_000 });
     await expect(b.locator("#unfinished")).toBeHidden();
   } finally {
@@ -142,6 +149,8 @@ test("Disconnect while paused discards the partial file and returns to the start
     await dropChannel(a);
     await expect(b.locator("#peer-state")).toHaveText("Reconnecting…", { timeout: 10_000 });
     await b.click("#leave");
+    await expect(b.locator("#disconnect-choice")).toBeVisible();
+    await b.click("#discard-unfinished");
     await expect(b.locator("#home")).toBeVisible();
     // discarding is asynchronous, so wait for the partial file to go rather than looking at one instant
     await expect.poll(() => b.evaluate(async () => {
@@ -154,4 +163,27 @@ test("Disconnect while paused discards the partial file and returns to the start
     await close();
     await startServer();
   }
+});
+
+test('Keep unfinished preserves browser progress and resumes without choosing the files again', async () => {
+  const { a, b, close } = await resumable();
+  try {
+    await start(a, b);
+    await reach(b, 0.35);
+    await b.click('#leave');
+    await expect(b.locator('#disconnect-choice')).toBeVisible();
+    await b.click('#stay-connected');
+    await expect(b.locator('#disconnect-choice')).not.toBeVisible();
+    await b.click('#leave');
+    await b.click('#keep-unfinished');
+    await expect(b.locator('#resume-kept')).toBeVisible();
+    await expect(a.locator('#resume-kept')).toBeVisible();
+    await expect(row(b, NAME)).toContainText('Kept for later');
+    expect(await b.evaluate(() => JSON.parse(localStorage.getItem('streamdrop-session')!).held)).toBe(true);
+    await expectDownloadMatches(b, async () => {
+      await b.click('#resume-kept');
+      await a.click('#resume-kept');
+    }, a);
+    await expect(row(a, NAME)).toContainText('Sent');
+  } finally { await close(); }
 });

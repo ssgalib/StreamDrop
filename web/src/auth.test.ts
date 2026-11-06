@@ -270,3 +270,22 @@ test("hkdf matches RFC 5869 test case 3 (no salt, no info)", async () => {
   assert.equal(concat(new Uint8Array(1), new Uint8Array(2)).length, 3);
 });
 
+
+test("gate bounds callbacks before asynchronous proof processing", async () => {
+  const { e, g } = solo({ required: true, key: pairProofKey(P) });
+  for (let i = 0; i < 257; i++) g.message(new ArrayBuffer(1));
+  assert.equal(e.failed, "auth");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(e.delivered.length, 0);
+  g.close();
+});
+
+test("gate rejects oversized control and binary messages before parsing or delivery", () => {
+  for (const data of ["a".repeat(32769), "名".repeat(11000), new ArrayBuffer(65536 + 27)]) {
+    const { e, g } = solo({ required: true, key: pairProofKey(P) });
+    g.message(data);
+    assert.equal(e.failed, "auth");
+    assert.deepEqual(e.delivered, []);
+    g.close();
+  }
+});

@@ -36,6 +36,17 @@
     <p class="alert" id="error" role="alert" hidden></p>
     <p class="back" id="back"><a class="btn btn-outline" href="./">Start a new transfer</a></p>
 
+    <dialog id="disconnect-choice" class="card" aria-labelledby="disconnect-title" aria-describedby="disconnect-description">
+      <h2 class="card-title" id="disconnect-title">Keep unfinished transfers?</h2>
+      <p class="card-desc" id="disconnect-description">Keep your progress to resume later, or discard it on this device. Completed files stay saved.</p>
+      <p class="hint">In a browser, keep this page open. Some file locations cannot survive a reload.</p>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="keep-unfinished">Keep unfinished</button>
+        <button type="button" class="btn btn-outline" id="discard-unfinished">Discard</button>
+        <button type="button" class="btn btn-outline" id="stay-connected">Stay connected</button>
+      </div>
+    </dialog>
+
     <!-- Transfers that were interrupted by closing or reloading the page -->
     <section id="unfinished" class="card" aria-labelledby="unfinished-title" hidden>
       <h2 class="card-title" id="unfinished-title">Unfinished transfers</h2>
@@ -160,6 +171,7 @@
 
       <div class="card ended" id="ended" hidden>
         <p class="card-desc" id="ended-text">The other device disconnected.</p>
+        <button type="button" class="btn btn-primary" id="resume-kept" hidden>Resume unfinished</button>
         <button type="button" class="btn btn-primary" id="restart">Start a new connection</button>
       </div>
 

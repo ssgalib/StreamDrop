@@ -63,14 +63,17 @@ transfer continues from where the receiver stopped (see "Interruptions" below).
 | Server restarts or is deployed | Resumes by itself once it is back |
 | Nothing is moving and the connection drops (a phone freezes the tab while you pick a file in the Files app) | Both devices reconnect by themselves and wait up to 5 minutes for each other |
 | The phone kills the tab and you reopen it within 10 minutes | The page rejoins the pair by itself (the shared secret is kept in the browser) |
-| One device presses **Disconnect** | The other is told at once and does not wait |
+| One device presses **Disconnect** with unfinished files | Choose **Keep unfinished**, **Discard**, or **Stay connected**. Keeping stops the connection and retains progress; discarding cancels unfinished files. Completed files stay saved. |
 | The device receiving reloads or closes the tab (parts sink) | After a reload, click **Resume receiving**; loses at most the open 64 MiB part |
 | The device sending reloads or closes the tab | After a reload, choose the same files again; nothing is lost on the receiving side |
 | A different file chosen on resume | Refused ("Not the same file: name"); a fingerprint of the size, date and first and last MiB is compared |
 | Receiver used the save picker or memory | Survives a drop with both tabs open, but not a reload |
-| The other device never comes back | **Disconnect** discards the partial files; unfinished partial files are removed after 24 hours |
+| The other device never comes back | Use **Disconnect** to keep progress or explicitly discard it. Browser partial files are removed after 24 hours. |
 
 Files that were only offered or waiting their turn are not kept across a page reload; only files that had started are.
+That restriction is for the website; the desktop app retains queued offers too. Keeping a browser transfer in the
+same page retains its selected files. After a reload, browser sending still requires choosing the original files,
+and receiving requires a resumable storage method. Both browser pages must resume their stopped connection.
 
 Tested: Chromium on Linux (Playwright; a 2 GiB transfer on the parts sink at 47 MiB/s; every row of the
 interruptions table except a real network cut, which is simulated by closing the data channel).
@@ -104,6 +107,9 @@ so the server can't change the code that handles your files. On top of the websi
   A saved connection closes after 2 idle minutes and reconnects when needed.
 - Files go straight to a folder (default `Downloads/StreamDrop`), never overwrite anything, and a transfer survives
   either app being killed: both finish by themselves after a restart.
+- **Keep unfinished** checkpoints progress without discarding it. After a restart it stays stopped until you press
+  **Resume transfers** or the other saved device calls. Temporary app connections can also be resumed, but both
+  devices must resume them. A durable cancellation wins over an older active record after a crash.
 - **Send a folder** with its structure, no zip. Stays in the tray; optional start with the computer; notifications.
 - **Always accept** per saved device, off by default, up to 2 GiB, into a subfolder named after that device.
 
@@ -112,6 +118,9 @@ password, so the app refuses to save and only one-off connections work. Removing
 for a lost device, remove it on every other device. There are no accounts and no automatic updates yet.
 
 The app talks to the live server, which must run this version first: older servers refuse its origin and `listen`.
+
+Crash-safe publication currently requires hard-link support in the destination filesystem. Unsupported filesystems
+are refused; a safe fallback and real Windows/macOS validation remain unfinished. See [recovery details](docs/recovery.md).
 
 ```bash
 cd desktop && npm install

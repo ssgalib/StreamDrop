@@ -180,3 +180,17 @@ test("the listener comes back after its socket closes", async (t) => {
   t.mock.timers.tick(120_000);
   assert.equal(sockets.length, 2, "stopped means stopped");
 });
+
+test("pair storage failures are reported instead of becoming unhandled rejections", async () => {
+  let failure = false;
+  const f = { fo: new Uint8Array(32).fill(1), fa: new Uint8Array(32).fill(2) };
+  const p = newTransferId();
+  let a: ReturnType<typeof createPairing>, b: ReturnType<typeof createPairing>;
+  a = createPairing({ role: "offer", p, fingerprints: () => f,
+    send: (m) => setTimeout(() => b.message(m)), saved: async () => { throw new Error("keyring locked"); }, failed: () => { failure = true; } });
+  b = createPairing({ role: "answer", p, fingerprints: () => f,
+    send: (m) => setTimeout(() => a.message(m)), saved: () => {}, failed: () => {} });
+  a.save(); b.save();
+  for (let i = 0; i < 100 && !failure; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(failure, true);
+});

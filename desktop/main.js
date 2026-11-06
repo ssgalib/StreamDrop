@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { createSinks, inside, read, stat, walk } = require("./files.js");
+const { atomicJson } = require("./durable.js");
 
 const SIGNAL_URL = process.env.STREAMDROP_SIGNAL || "wss://streamdrop.kurohane.xyz/ws";
 const ORIGIN = process.env.STREAMDROP_ORIGIN || "https://streamdrop.kurohane.xyz";
@@ -24,6 +25,13 @@ let win;
 let tray;
 let quitting = false;
 let keepAwake;
+const sourceGrants = new Set();
+const sinkRoots = new Set();
+const hasSource = (p) => typeof p === "string" && sourceGrants.has(path.resolve(p));
+function requireSource(p) {
+  if (!hasSource(p)) throw new Error("Choose this file in StreamDrop first");
+  return path.resolve(p);
+}
 
 const dataFile = (name) => path.join(app.getPath("userData"), name);
 
@@ -32,9 +40,7 @@ async function loadJson(name, fallback) {
 }
 
 async function saveJson(name, value) {
-  const tmp = `${dataFile(name)}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(value), { mode: 0o600 });
-  await fs.rename(tmp, dataFile(name));
+  await atomicJson(dataFile(name), value);
 }
 
 // ---------------------------------------------------------------- keys
@@ -110,7 +116,33 @@ let recordWrites = Promise.resolve();
 function setRecord(value) {
   record = typeof value === "string" ? value : null;
   const snapshot = record;
-  recordWrites = recordWrites.then(() => saveJson("record.json", snapshot)).catch(() => {});
+  const committed = recordWrites.then(async () => {
+    if (snapshot) {
+      const parsed = JSON.parse(snapshot);
+      if (!/^[A-Z2-7]{26}$/.test(parsed.session) || !Array.isArray(parsed.items)) throw new Error("Invalid transfer record");
+      for (const item of parsed.items) {
+        if (item.path && !hasSource(item.path)) throw new Error("Unapproved file in transfer record");
+        if (item.root && !sinkRoots.has(path.resolve(item.root))) throw new Error("Unapproved destination in transfer record");
+      }
+      const completed = parsed.items.filter((it) => it.state === "cancelled" || it.state === "done" && it.dir === "receive");
+      if (completed.length) {
+        const cutoff = Date.now() - 30 * 24 * 60 * 60_000;
+        const receipts = (await loadJson("receipts.json", [])).filter((it) => it.at >= cutoff);
+        for (const item of completed) {
+          if (!/^[A-Z2-7]{26}$/.test(item.id) || !/^[0-9a-f]{64}$/.test(item.fp)) throw new Error("Invalid completion record");
+          const existing = receipts.find((it) => it.session === parsed.session && it.item.id === item.id);
+          if (existing) {
+            if (item.state === "cancelled") existing.item = item;
+          } else receipts.push({ session: parsed.session, at: Date.now(), item });
+        }
+        if (receipts.length > 10000) throw new Error("Too many retained completion records");
+        await saveJson("receipts.json", receipts);
+      }
+    }
+    await saveJson("record.json", snapshot);
+  });
+  recordWrites = committed.catch(() => {}); // keep the queue usable, but report this write's failure
+  return committed;
 }
 
 // ---------------------------------------------------------------- talking to the page
@@ -118,9 +150,13 @@ function setRecord(value) {
 // The bundled page is the only thing allowed to call these.
 function handle(name, fn) {
   ipcMain.handle(name, (event, ...args) => {
-    if (!event.senderFrame?.url.startsWith(PAGE)) throw new Error("Refused");
+    if (!trusted(event)) throw new Error("Refused");
     return fn(...args);
   });
+}
+
+function trusted(event) {
+  return event.senderFrame === win?.webContents.mainFrame && event.senderFrame?.url.startsWith(PAGE);
 }
 
 async function chooseFolder(title) {
@@ -130,14 +166,24 @@ async function chooseFolder(title) {
 
 function registerIpc(canSave) {
   ipcMain.on("app:info", (event) => {
+    if (!trusted(event)) { event.returnValue = null; return; }
     event.returnValue = { signalUrl: SIGNAL_URL, origin: ORIGIN, deviceName: os.hostname().slice(0, 64), canSave };
   });
-  ipcMain.on("record:get", (event) => { event.returnValue = record; });
-  ipcMain.on("record:set", (event, value) => {
-    if (event.senderFrame?.url.startsWith(PAGE)) setRecord(value);
+  ipcMain.on("record:get", (event) => { event.returnValue = trusted(event) ? record : null; });
+  ipcMain.on("file:grant", (event, p) => {
+    if (!trusted(event) || typeof p !== "string" || !path.isAbsolute(p)) { event.returnValue = ""; return; }
+    sourceGrants.add(path.resolve(p));
+    event.returnValue = p;
   });
-  ipcMain.on("app:busy", (_, on) => setBusy(!!on));
-  ipcMain.on("app:notify", (_, title, body) => {
+  handle("record:set", setRecord);
+  handle("receipts:list", async (roomId) => {
+    if (typeof roomId !== "string" || !/^[A-Z2-7]{26}$/.test(roomId)) throw new Error("Invalid device");
+    const cutoff = Date.now() - 30 * 24 * 60 * 60_000;
+    return (await loadJson("receipts.json", [])).filter((it) => it.session === roomId && it.at >= cutoff).map((it) => it.item);
+  });
+  ipcMain.on("app:busy", (event, on) => { if (trusted(event)) setBusy(!!on); });
+  ipcMain.on("app:notify", (event, title, body) => {
+    if (!trusted(event)) return;
     if (win?.isFocused() || !Notification.isSupported()) return;
     const n = new Notification({ title: String(title), body: String(body) });
     n.on("click", showWindow);
@@ -148,6 +194,8 @@ function registerIpc(canSave) {
   handle("devices:add", async ({ roomId, name, k }) => {
     if (!canSave) throw new Error("This computer has no safe place for keys");
     const list = (await loadDevices()).filter((d) => d.roomId !== roomId);
+    if (list.length >= 32) throw new Error("StreamDrop can save up to 32 devices. Remove one before saving another.");
+    if (!/^[A-Z2-7]{26}$/.test(roomId) || !(k instanceof Uint8Array) || k.length !== 32) throw new Error("Invalid device key");
     list.push({ roomId, name: String(name).slice(0, 64), addedAt: Date.now(), lastSeen: Date.now(), alwaysAccept: false, k: await seal(k) });
     await saveJson("devices.json", list);
   });
@@ -159,19 +207,36 @@ function registerIpc(canSave) {
   handle("devices:update", changeDevice);
   handle("devices:remove", async (roomId) => saveJson("devices.json", (await loadDevices()).filter((d) => d.roomId !== roomId)));
 
-  handle("sink:open", (s) => sinks.open(s));
+  handle("sink:open", (s) => {
+    if (s.root && !sinkRoots.has(path.resolve(s.root))) throw new Error("Unapproved destination");
+    return sinks.open(s);
+  });
   handle("sink:write", (id, data) => sinks.write(id, data));
+  handle("sink:checkpoint", (id) => sinks.checkpoint(id));
   handle("sink:close", (id) => sinks.close(id).then(() => undefined));
-  handle("sink:abort", (id) => sinks.abort(id));
+  handle("sink:abort", (id, root) => {
+    if (root && !sinkRoots.has(path.resolve(root))) throw new Error("Unapproved destination");
+    return sinks.abort(id, root);
+  });
   handle("sink:offset", (id) => sinks.offset(id));
-  handle("sink:clean", () => sinks.clean());
+  handle("sink:clean", () => {
+    let ids = [];
+    try { ids = JSON.parse(record)?.items?.filter((it) => it.dir === "receive").map((it) => it.id) ?? []; } catch { /* no valid record */ }
+    return sinks.clean(ids);
+  });
 
-  // shortcut: the page can read any path here. It is our own bundled code, under a strict CSP, and shows peer text
-  // only as text. If it ever loads remote content, restrict this to paths the person chose.
-  handle("file:read", (p, start, end) => read(String(p), start, end));
-  handle("file:stat", (p) => stat(String(p)));
-  handle("file:pickFolder", () => chooseFolder("Choose a folder to send"));
-  handle("file:walk", (p) => walk(String(p)));
+  handle("file:read", (p, start, end) => read(requireSource(p), start, end));
+  handle("file:stat", (p) => stat(requireSource(p)));
+  handle("file:pickFolder", async () => {
+    const dir = await chooseFolder("Choose a folder to send");
+    if (dir) sourceGrants.add(path.resolve(dir));
+    return dir;
+  });
+  handle("file:walk", async (p) => {
+    const entries = await walk(requireSource(p));
+    for (const entry of entries) sourceGrants.add(path.resolve(entry.path));
+    return entries;
+  });
 
   handle("settings:get", async () => ({ autostart: await getAutostart(), downloads: downloadsDir() }));
   handle("settings:setAutostart", setAutostart);
@@ -179,6 +244,7 @@ function registerIpc(canSave) {
     const dir = await chooseFolder("Choose where to save files");
     if (dir) {
       settings.downloads = dir;
+      sinkRoots.add(path.resolve(dir));
       await saveJson("settings.json", settings);
     }
     return downloadsDir();
@@ -230,6 +296,7 @@ function createWindow() {
       sandbox: true,
       nodeIntegration: false,
       backgroundThrottling: false, // the engine keeps moving files while the window is hidden
+      offscreen: !app.isPackaged && process.env.STREAMDROP_TEST_OFFSCREEN === "1",
     },
   });
   // The page never leaves the bundle: a link goes to the system browser, anything else is refused.
@@ -271,6 +338,21 @@ app.on("window-all-closed", () => { if (!tray || quitting) app.quit(); });
 app.whenReady().then(async () => {
   settings = { ...settings, ...(await loadJson("settings.json", {})) };
   record = await loadJson("record.json", null);
+  sinkRoots.add(path.resolve(downloadsDir()));
+  // The outcome ledger may have committed before a crash left an older active journal (or no journal).
+  for (const entry of await loadJson("receipts.json", [])) {
+    const item = entry?.item;
+    if (item?.state !== "cancelled" || item.dir !== "receive" || !/^[A-Z2-7]{26}$/.test(item.id)) continue;
+    if (typeof item.root === "string" && path.isAbsolute(item.root)) sinkRoots.add(path.resolve(item.root));
+    await sinks.abort(item.id, item.root).catch(() => {}); // a removed/offline volume can be retried on a later start
+  }
+  try {
+    const restored = JSON.parse(record);
+    for (const item of restored?.items ?? []) {
+      if (typeof item.path === "string" && path.isAbsolute(item.path)) sourceGrants.add(path.resolve(item.path));
+      if (typeof item.root === "string" && path.isAbsolute(item.root)) sinkRoots.add(path.resolve(item.root));
+    }
+  } catch { /* invalid records are rejected by the renderer's schema validation */ }
   registerIpc(await canKeepSecrets());
   serveUi();
   if (!process.env.STREAMDROP_NO_TRAY) createTray();

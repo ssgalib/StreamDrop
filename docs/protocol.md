@@ -151,6 +151,39 @@ Rules and limits:
 
 A receiver accepts up to 500 unanswered offers. A v2 sender keeps at most 100 unanswered, so that it works with old pages.
 
+### Resource limits and durable completion
+
+- Control messages are limited to 32 KiB of UTF-8. A binary frame is at most 26 + 64 KiB.
+- ACK offsets must be safe integers, must not decrease, and must not exceed bytes already sent on that sender.
+- A receiver bounds queued payload across all files on a connection to 32 MiB, not 32 MiB per file.
+  It also limits outstanding write callbacks to 32,768 and ignores empty payloads without allocating a write task.
+- Authentication adapters bound bytes and callback count before enqueueing asynchronous work. Holding at most
+  256 messages is not sufficient without a byte limit; the gate also limits held data to 16 MiB.
+- Cancelling a sender while it is reading a chunk must prevent that chunk from being sent afterwards.
+- A receiver freezes incoming writes when finalization starts. Repeated `done` cannot finalize a file twice.
+- An app commits its offer/acceptance record before announcing the offer or accepting it. After the sink closes,
+  it commits a completion receipt before sending `saved`. Receipts are scoped to the authenticated saved device,
+  survive clearing visible history, and answer matching `resume` requests even after restart.
+- Local record formats and receipts are not wire extensions. These checks do not change v2 or its minimum version.
+
+### Cancellation and kept transfers
+
+- Cancellation stops new source reads and incoming delivery immediately. Apps MUST commit a cancellation outcome
+  before notifying the other device or deleting a partial file. Pending writes and finalization must settle before
+  aborting the sink. If the commit fails, keep the partial and report the failure; do not claim cancellation succeeded.
+- Retain cancellation outcomes independently of visible activity. On reconnect, replay the existing `cancel{id}`;
+  a matching `meta` or `resume` must not revive a cancelled transfer. A durable cancellation overrides an older
+  active queue record during restoration. Outcomes are scoped to the connection/device, not global transfer ids.
+- Completion receipts also answer a repeated offer with `saved` when its id, fingerprint and size match. Reusing
+  a completed id for different metadata is refused. This avoids a duplicate destination when the sender's queue
+  record predates acceptance but the receiver already committed the file.
+- Keeping unfinished transfers is a local state, not a new wire message. Checkpoint the sinks and preserve the
+  queue and proof requirement, then use `bye{reason:"user"}` to stop the connection. The retained `held` flag
+  prevents automatic dialing after restart. A saved app may still answer an authenticated call from that device.
+- Receivers MUST NOT interpret an ordinary goodbye or an authentication failure as permission to delete partial
+  files. Explicit `cancel`, local Discard, or documented expiry controls deletion. Older clients may still discard
+  their own progress on goodbye; keeping local progress cannot change an old client's behaviour.
+
 ## Versioning
 
 - Additive changes (new fields, new messages, new caps) keep `v`.

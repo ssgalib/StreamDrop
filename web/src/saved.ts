@@ -34,7 +34,7 @@ export type PairingOptions = {
   p: string;
   fingerprints(): Fingerprints | null;
   send(msg: object): void;
-  saved(k: Uint8Array): void; // both sides proved they hold the same K
+  saved(k: Uint8Array): void | Promise<void>; // resolves after the pair is stored locally
   failed(): void;
 };
 
@@ -66,7 +66,7 @@ export function createPairing(o: PairingOptions) {
     if (!ka || !theirConfirm || finished) return;
     if (!(await hmacOk(ka, theirConfirm, confirmInput(other)))) return fail();
     finished = true;
-    o.saved(k!);
+    try { await o.saved(k!); } catch { o.failed(); }
   }
 
   return {

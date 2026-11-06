@@ -83,8 +83,14 @@ export async function pair(opts: { persistent?: boolean; memory?: boolean; withS
 export const progress = (p: Page) =>
   p.evaluate(() => { const e = document.querySelector<HTMLProgressElement>(".item progress:not([hidden])"); return e ? e.value / e.max : 0; });
 
-export const reach = (p: Page, fraction: number) =>
-  p.waitForFunction((f) => { const e = document.querySelector<HTMLProgressElement>(".item progress:not([hidden])"); return !!e && e.value / e.max >= f; }, fraction, { timeout: 90_000 });
+export const reach = async (p: Page, fraction: number) => {
+  try {
+    await p.waitForFunction((f) => { const e = document.querySelector<HTMLProgressElement>(".item progress:not([hidden])"); return !!e && e.value / e.max >= f; }, fraction, { timeout: 90_000 });
+  } catch (err) {
+    console.error("Progress wait failed:", await p.locator("#activity").innerText(), await p.locator("#error").textContent());
+    throw err;
+  }
+};
 
 // Remembers every text #peer-state shows, so a test can prove a short-lived state ("Reconnecting…") happened.
 export const watchPeerState = (p: Page) =>

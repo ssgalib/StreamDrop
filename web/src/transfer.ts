@@ -4,6 +4,8 @@ export const LOW_WATER = 1024 * 1024;
 export const WINDOW = 16 * 1024 * 1024; // max bytes sent but not yet stored
 export const ACK_EVERY = 1024 * 1024;
 export const MAX_SIZE = 20 * 1024 ** 3;
+export const MAX_CONTROL = 32 * 1024; // UTF-8 bytes, before parsing JSON
+export const controlBytes = (data: string) => new TextEncoder().encode(data).byteLength;
 
 export type Channel = { bufferedAmount: number; send(data: string | ArrayBuffer): void };
 
@@ -56,7 +58,7 @@ export function frame(id: string, data: ArrayBuffer): ArrayBuffer {
 }
 
 export function parseFrame(buf: ArrayBuffer): { id: string; data: ArrayBuffer } | null {
-  if (buf.byteLength < ID_LEN) return null;
+  if (buf.byteLength < ID_LEN || buf.byteLength > ID_LEN + CHUNK) return null;
   const id = new TextDecoder().decode(new Uint8Array(buf, 0, ID_LEN));
   return ID_RE.test(id) ? { id, data: buf.slice(ID_LEN) } : null;
 }
@@ -122,23 +124,32 @@ export function createSender(
   start = 0, // resume: the receiver already has this many bytes
 ) {
   let acked = start;
+  let sent = start;
   let cancelled = false;
   let wake = () => {};
 
   return {
     wake: () => wake(),
-    ack(bytes: number) { acked = bytes; wake(); },
+    ack(bytes: number) {
+      if (!Number.isSafeInteger(bytes) || bytes < acked || bytes > sent) return false;
+      acked = bytes;
+      wake();
+      return true;
+    },
     cancel() { cancelled = true; wake(); },
     async run() {
-      let sent = start;
+      if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || chunkSize > CHUNK) throw new Error("Unsupported message size");
       while (sent < file.size && !cancelled) {
         if (sent - acked >= WINDOW || ch.bufferedAmount > HIGH_WATER) {
           await new Promise<void>((resolve) => (wake = resolve));
           continue;
         }
         // slice() reads only this piece, so a 20 GiB file never sits in memory.
-        ch.send(await file.slice(sent, sent + chunkSize).arrayBuffer());
-        sent = Math.min(sent + chunkSize, file.size);
+        const data = await file.slice(sent, Math.min(sent + chunkSize, acked + WINDOW)).arrayBuffer();
+        if (cancelled) break; // cancellation may happen during an asynchronous source read
+        if (!data.byteLength) throw new Error("Couldn't read the file");
+        sent += data.byteLength; // synchronous in-memory transports may ACK inside send()
+        ch.send(data);
         progress(sent);
       }
       if (!cancelled) ch.send(JSON.stringify({ t: "done" }));
@@ -147,10 +158,12 @@ export function createSender(
 }
 
 export type Sink = {
+  root?: string; // app destination captured when accepted, independent of later settings changes
   resumable?: boolean; // partial data survives closing the tab
   write(data: ArrayBuffer): Promise<void>;
   close(): Promise<void>;
   abort(): Promise<void>;
+  checkpoint?(): Promise<void>;
 };
 
 export function createReceiver(
@@ -160,19 +173,34 @@ export function createReceiver(
   progress: (bytes: number) => void,
   fail: (err: unknown) => void,
   start = 0, // resume: the sink already holds this many bytes
+  beforeSaved: () => Promise<void> = async () => {},
+  budget: { pending: number; frames?: number } = { pending: 0 }, // shared by every receiver on a connection
 ) {
   let arrived = start, stored = start, lastAck = start;
   let queue = Promise.resolve(); // keeps writes in order
+  let error: Error | undefined;
+  let finishing = false;
+  let completion: Promise<void> | undefined;
+  let stopped = false;
+  const failed = (err: unknown) => {
+    if (error) return;
+    error = err instanceof Error ? err : new Error(String(err));
+    fail(error);
+  };
 
   return {
     chunk(data: ArrayBuffer) {
+      if (error || stopped || finishing || data.byteLength === 0) return;
       arrived += data.byteLength;
       // A correct sender can't trigger either check, so this one is misbehaving.
-      if (arrived > size || arrived - stored > 2 * WINDOW) {
-        fail(new Error("Sender broke the protocol"));
+      if (data.byteLength > CHUNK || arrived > size || arrived - stored > 2 * WINDOW || budget.pending + data.byteLength > 2 * WINDOW || (budget.frames ?? 0) >= 32768) {
+        failed(new Error("Sender broke the protocol"));
         return;
       }
+      budget.pending += data.byteLength;
+      budget.frames = (budget.frames ?? 0) + 1;
       queue = queue.then(async () => {
+        if (error) return;
         await sink.write(data);
         stored += data.byteLength;
         progress(stored);
@@ -180,18 +208,35 @@ export function createReceiver(
           lastAck = stored;
           ch.send(JSON.stringify({ t: "ack", bytes: stored }));
         }
-      }).catch(fail);
+      }).catch(failed).finally(() => {
+        budget.pending -= data.byteLength;
+        budget.frames = (budget.frames ?? 1) - 1;
+      });
     },
     // Waits for queued writes, then says how many bytes are really stored: the offset to resume from.
     async flush() {
       await queue;
       return stored;
     },
-    async done() {
+    async settle() {
       await queue;
-      if (stored !== size) throw new Error("File is incomplete");
-      await sink.close();
-      ch.send(JSON.stringify({ t: "saved" }));
+      await completion?.catch(() => {});
+      return stored;
+    },
+    stop() { stopped = true; },
+    done() {
+      finishing = true;
+      return completion ??= (async () => {
+        await queue;
+        if (stopped) throw new Error("Transfer cancelled");
+        if (error) throw error;
+        if (stored !== size) throw new Error("File is incomplete");
+        await sink.close();
+        if (stopped) throw new Error("Transfer cancelled");
+        await beforeSaved();
+        if (stopped) throw new Error("Transfer cancelled");
+        ch.send(JSON.stringify({ t: "saved" }));
+      })();
     },
   };
 }
