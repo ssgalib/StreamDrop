@@ -274,7 +274,7 @@ Chosen with the user: pair by link, QR or code (no same-network discovery, for p
 - [x] 2 GiB each way, sha256 matches: to the phone 18.3 MiB/s, from the phone 12.0 MiB/s. Process memory peaked at 153 MiB. Battery temperature 37.6 C at the end, on USB power.
 - [x] All 4 quick tests (verified both roles, wrong key, typed code).
 - [x] **The file-picker freeze is gone in a foreground service:** the real DocumentsUI picker opened mid-transfer, then the screen went off, and 512 MiB arrived intact with no drop.
-- [ ] **Carrier NAT: untested.** With Wi-Fi off the phone had no default network within 30 s (only an LTE link that looks like IMS; `mobile_data=1`, SIM state `LOADED,NOT_READY`). The one run that seemed to fail at `ice CHECKING` most likely had no internet at all, so it says nothing about NAT or TURN.
+- [x] **Mobile data works on STUN alone, no relay:** after the user turned mobile data on, 8 MiB arrived intact with Wi-Fi off, phone on LTE (IPv4 `srflx` on `rmnet2`) to this laptop on home broadband, 0.3 MiB/s. One carrier and one home router only; the speed is one sample and the bottleneck is unknown. An earlier run that stuck at `ice CHECKING` had no internet (mobile data was off), so it says nothing.
 - [ ] Wi-Fi to mobile data switch mid-transfer: needs mobile data, and reconnect, which the spike lacks.
 - Not measured: battery drain, vendor service killing (a Pixel proves little), Doze, Android 17 limits on long `dataSync` runs.
 - The spike was uninstalled from the phone afterwards.
