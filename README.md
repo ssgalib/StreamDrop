@@ -234,6 +234,7 @@ web/src/           main.ts the page, connection.ts signaling + WebRTC + rejoin, 
                    saved.ts saved connections and the listener, app.ts what only the desktop app does
 web/e2e/           Playwright tests: either-way transfers, resume (reloads, drops, server restart), Stored
 deploy/            nginx config, systemd unit, deploy and install scripts, optional coturn setup (install-turn.sh)
+android/           Kotlin spike: Auth.kt the protocol's crypto and gate, SpikeService.kt throwaway, driven by adb
 desktop/           Electron app: main.js the shell, files.js everything touching disk, preload.js what the page may call
 docs/              protocol.md the wire protocol, vectors.json test vectors for any client
 plan.md, project-plan.md, plan_2.md, plan_3.md, track.md   plans and progress

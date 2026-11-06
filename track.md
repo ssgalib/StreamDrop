@@ -262,6 +262,14 @@ Chosen with the user: pair by link, QR or code (no same-network discovery, for p
 - Not verified: the `.deb` (bundled `fpm` exits 127 on this machine, probably a host library; try on Ubuntu or CI); Windows and macOS at all, including `Zone.Identifier`, `safeStorage` there and `setLoginItemSettings`; the tray (windows stayed hidden and tray was off in tests, and Hyprland may have none); real keyrings (none here, so only the refusal path ran; the sealing code has never executed); notifications; the folder dialog (stubbed); memory and speed over IPC at large sizes; 20 GiB; two machines on different networks.
 - Left out on purpose: automatic updates, macOS quarantine mark, signing, Store packaging (M5).
 
+# plan_3.md M1: Android spike (emulator only, NOT on a real phone)
+- [x] `android/`: Kotlin, `io.github.webrtc-sdk:android:150.7871.04`, OkHttp, a foreground service driven by adb. `Auth.kt` (port of auth.ts, stays) passes `docs/vectors.json` on the JVM, 11 tests. `SpikeService.kt` is throwaway: no UI, no resume, no reconnect.
+- [x] Against real Chromium and the real Go server (`web/e2e/android.spec.ts`): verified in both roles, wrong key refused, typed code unverified, sha256 matches.
+- [x] 2 GiB each way on an API 35 emulator: to Android 35.5 MiB/s, from Android 36.6 MiB/s. Process memory 38-73 MiB, JVM heap 3-5 MiB. APK 32 MB (arm64 and x86_64).
+- Bug found: libwebrtc can deliver buffered messages before the OPEN event, so the first `hello` was lost and the answerer failed auth. Any native client must start its gate on the first message. Browsers don't do this.
+- Emulator traps: its virtual Wi-Fi loses beacons every few seconds and drops the network, so boot with `-feature -Wifi`. Large files in a browser test need a persistent profile and enough quota, or they reach the save dialog nobody can press.
+- Not verified, needs a real phone: real speed, the Files-app freeze, Wi-Fi to mobile data, carrier NAT, battery, vendor service killing. The emulator's speed says nothing about those. The M1 gate in the plan is only half passed.
+
 # plan_3.md: not started
-- M1 Android spike: needs a phone on USB. The plan makes it the gate for all Android work, so M3 is not started.
+- M3 Android app: UI, reconnect, resume, SAF and MediaStore, share sheet, Keystore. Most can be built on the emulator.
 - M4 device matrix depends on Android. M5 needs accounts, signing and decisions in section 7.
