@@ -105,3 +105,12 @@ Not verified:
 - [ ] Transfer between two devices on the same network (only tested two tabs on one machine)
 - [ ] `nmap` from another machine (not available here)
 - [ ] Restarting `streamdrop` mid-transfer leaves the transfer running (needs sudo; the design allows it because signaling is not used after connect)
+
+# Milestone 7: Release (partly done; TURN/Milestone 6 skipped)
+- [x] Playwright e2e (`npm run test:e2e`, dev dependency `@playwright/test`): starts both servers, sends a generated 5 MiB file and a zero-byte file between two Chromium browsers, compares sha256 (memory sink).
+- [x] Load test (`server/loadtest`, run locally): 1000 paired rooms = 2000 connections, 0 failures, 144 ms to connect; server RSS 11.9 MiB idle -> 70 MiB under load (limit 4 GB); all connections released afterwards. Per-IP limit returns HTTP 429 on the 11th, room cap returns `server-busy`; the server kept running. Not run on the VPS (shared with other sites).
+- [x] Security review: only log line is "listening" (no tokens/SDP); no innerHTML/eval; `.env` never committed; `go vet`, `govulncheck`, `npm audit` clean; the server has no message type that carries file bytes.
+- [x] README with runbook (adapted to nginx + systemd + Cloudflare Tunnel, no Docker/TURN).
+- [ ] Browser matrix: only Chromium on Linux. Playwright's Firefox gathers no ICE candidates here and WebKit needs libraries this machine lacks (`CROSS_BROWSER=1` is opt-in). Firefox, Safari, Edge, Windows, macOS, Android and iOS are untested.
+- [ ] A fresh VPS set up from the README alone; a 20 GiB transfer across two real networks.
+- Finding: with no STUN/TURN (`iceServers: []`), transfers work between browsers that can reach each other directly (same LAN) but likely fail across different networks. Milestone 6 (at least STUN) is needed for the main "send a file to a friend" case.
