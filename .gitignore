@@ -5,3 +5,4 @@ deploy/build/
 test-results/
 playwright-report/
 web/e2e/.bin/
+graphify-out/
