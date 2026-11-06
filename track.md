@@ -95,3 +95,13 @@ Not verified:
 ## Deploy (run by the user; needs sudo password)
 1. One-time: add the `streamdrop.kurohane.xyz` ingress rule to `/etc/cloudflared/config.yml` (snippet is in the header of `deploy/deploy.sh`), restart cloudflared, run `cloudflared tunnel route dns`.
 2. `deploy/deploy.sh` (builds, rsyncs to the VPS, runs `install.sh` under sudo).
+
+## Milestone 5 live results (https://streamdrop.kurohane.xyz)
+- [x] Deployed with `deploy/deploy.sh`; tunnel rule added to `/etc/cloudflared/config.yml` (backup at `config.yml.bak`) and DNS routed. Other sites (habits, pomodoro, typing, voxel) still return 200.
+- [x] Page loads over HTTPS (Cloudflare certificate) with CSP, Referrer-Policy and nosniff headers.
+- [x] WebSocket upgrade over HTTP/1.1: real origin 101, foreign origin 403.
+- [x] Live transfer in two Chromium tabs on this machine: 1 KiB and 50 MB, sha256 match (50 MB in 3.3 s).
+- [ ] **CSP errors:** Cloudflare injects its Web Analytics beacon (`static.cloudflareinsights.com/beacon.min.js`), which the CSP blocks. Harmless, but the console shows an error. Fix in the Cloudflare dashboard (Web Analytics / auto-injection off for this hostname) rather than loosening the CSP.
+- [ ] Transfer between two devices on the same network (only tested two tabs on one machine)
+- [ ] `nmap` from another machine (not available here)
+- [ ] Restarting `streamdrop` mid-transfer leaves the transfer running (needs sudo; the design allows it because signaling is not used after connect)
