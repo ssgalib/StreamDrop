@@ -139,3 +139,8 @@ Not verified:
 
 # Cross-network result
 - [x] User reported a transfer between two devices on different networks works with STUN only (no relay). Decision: do not install coturn for now; `install-turn.sh` stays opt-in for later if real users report "Couldn't connect the two devices". (Which exact devices/networks were used was not recorded.)
+
+# QR code
+- [x] Invite link also shown as a QR code (`web/src/qr.ts`, dependency `qrcode-generator`, drawn as SVG elements). Hidden once the other person joins or the room expires.
+- [x] Checked in Chromium: the rendered QR (desktop light and 360 px dark) decodes with an independent decoder (jsQR) to exactly the invite link; no sideways scroll; hidden after pairing. e2e, unit and build pass; `npm audit` clean.
+- Not checked: scanning with a real phone camera; the live site under its CSP (SVG built with DOM attributes, which style-src does not block); needs `deploy/deploy.sh` to go live.

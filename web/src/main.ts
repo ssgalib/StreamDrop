@@ -1,6 +1,7 @@
 import { createPeer, type Signal } from "./peer";
 import { CHUNK, createReceiver, createSender, parseMeta, type Meta, type Sink } from "./transfer";
 import { chooseSink, cleanOpfs } from "./sinks";
+import { drawQr } from "./qr";
 import "./style.css";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -11,6 +12,7 @@ const tokenEl = $("#token");
 const linkEl = $<HTMLInputElement>("#link");
 const copyBtn = $("#copy");
 const renewDiv = $("#renew");
+const qrDiv = $("#qr");
 const tokenInput = $<HTMLInputElement>("#token-input");
 const senderDiv = $("#sender");
 const fileInput = $<HTMLInputElement>("#file");
@@ -237,6 +239,8 @@ function connect(first: object) {
           renewDiv.hidden = true;
           tokenEl.textContent = msg.token;
           linkEl.value = `${location.origin}/#${msg.token}`;
+          drawQr($<SVGSVGElement & HTMLElement>("#qr-code"), linkEl.value);
+          qrDiv.hidden = false;
           copyBtn.focus();
           setStatus("Waiting for peer");
           break;
@@ -247,6 +251,7 @@ function connect(first: object) {
           setStatus("Connecting");
           break;
         case "peer-joined":
+          qrDiv.hidden = true; // the link is used up
           peer = createPeer(true, msg.iceServers ?? [], events);
           setStatus("Connecting");
           await peer.start();
@@ -265,7 +270,7 @@ function connect(first: object) {
         case "error":
           if (msg.code === "expired" && !shareP.hidden && !peer) {
             // Our own waiting room timed out: drop the dead link and offer a fresh one.
-            shareP.hidden = true;
+            shareP.hidden = qrDiv.hidden = true;
             renewDiv.hidden = false;
             setStatus("Link expired");
             showError("Link expired.");

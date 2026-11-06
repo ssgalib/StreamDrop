@@ -7,8 +7,8 @@ Live: https://streamdrop.kurohane.xyz
 
 ## How it works
 
-1. The sender opens the site and clicks **Create Room**. An invite link `https://host/#token` appears.
-2. The receiver opens the link (the token after `#` never reaches the server) and both pages connect.
+1. The sender opens the site and clicks **Create Room**. An invite link `https://host/#token` appears, with a QR code of the same link.
+2. The receiver opens the link (or scans the QR code with a phone camera) (the token after `#` never reaches the server) and both pages connect.
 3. The sender picks a file, the receiver clicks **Accept**, and the bytes flow browser to browser.
 
 The token works for joining for 10 minutes and for one receiver. Each room holds exactly two people.
