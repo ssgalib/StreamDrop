@@ -59,7 +59,7 @@ export async function chooseSink(meta: Meta): Promise<Sink> {
     if (meta.size * 2 < quota - usage) return opfsSink(meta.name, meta.type);
   }
   if (meta.size <= MEMORY_LIMIT) return memorySink(meta.name, meta.type);
-  throw new Error("This browser can't store a file this large. Try Chrome or Edge on a computer.");
+  throw new Error("This browser can't save a file this large. Try Chrome or Edge on a computer.");
 }
 
 // OPFS space isn't freed by downloading. Age (not "unused") is what protects a transfer in another tab.

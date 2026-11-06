@@ -18,7 +18,13 @@
       </section>
 
       <section id="room" hidden>
-        <p id="share" hidden>Share this token: <code id="token"></code></p>
+        <p id="share" hidden>
+          <label>Invite link <input id="link" readonly></label>
+          <button id="copy" type="button">Copy</button><br>
+          Or share the token: <code id="token"></code>
+        </p>
+        <div id="renew" hidden><button id="renew-btn" type="button">Create New Link</button></div>
+        <p>Keep both tabs open until the transfer finishes.</p>
         <div id="sender" hidden>
           <label>File <input type="file" id="file" disabled></label>
         </div>
@@ -28,7 +34,7 @@
           <button id="decline" type="button">Decline</button>
         </div>
         <div id="transfer" hidden>
-          <progress id="progress" value="0" max="1"></progress> <span id="pct">0%</span>
+          <progress id="progress" aria-label="Transfer progress" value="0" max="1"></progress> <span id="pct">0%</span>
           <button id="cancel" type="button">Cancel</button>
         </div>
       </section>
