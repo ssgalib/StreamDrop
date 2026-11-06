@@ -155,3 +155,56 @@ test("a typed code connects, unverified", async () => {
     await close();
   }
 });
+
+// Real phone only: these change the phone's state.
+const phone = !!process.env.ANDROID_PHONE;
+
+test("the transfer survives the file picker opening and the screen going off", async () => {
+  test.skip(!phone, "set ANDROID_PHONE");
+  const { page, close } = await browserPage();
+  try {
+    const path = join(dir, "picker.bin");
+    const fd = openSync(path, "w");
+    for (let i = 0; i < 32; i++) writeSync(fd, randomBytes(1 << 24));
+    closeSync(fd);
+    startApp(["--es", "invite", await invite(page)]);
+    await connected(page);
+    await page.setInputFiles("#files", path);
+    await logged(/OFFER picker\.bin/);
+    await new Promise((r) => setTimeout(r, 3000));
+    adb("shell", "am start -a android.intent.action.OPEN_DOCUMENT -c android.intent.category.OPENABLE -t '*/*'"); // quoted: the phone's shell would expand it
+    await new Promise((r) => setTimeout(r, 5000));
+    adb("shell", "input", "keyevent", "KEYCODE_SLEEP");
+    console.log((await logged(/RECEIVED picker\.bin .*/, 300_000))[0]);
+    expect(deviceSha(`${FILES}/recv-picker.bin`)).toBe(await shaFile(path));
+  } finally {
+    adb("shell", "input", "keyevent", "KEYCODE_WAKEUP");
+    adb("shell", "input", "keyevent", "KEYCODE_BACK");
+    await close();
+  }
+});
+
+test("over mobile data, with Wi-Fi off", async () => {
+  test.skip(!phone, "set ANDROID_PHONE");
+  const { page, close } = await browserPage();
+  adb("shell", "svc", "wifi", "disable");
+  try {
+    const online = () => !/Active default network: none/.test(adb("shell", "dumpsys", "connectivity"));
+    await new Promise((r) => setTimeout(r, 5000)); // Wi-Fi counts as the default network for a moment after it is switched off
+    for (let i = 0; i < 30 && !online(); i++) await new Promise((r) => setTimeout(r, 1000));
+    test.skip(!online(), "this phone has no mobile internet");
+    console.log("NET", adb("shell", "ip -o addr show scope global | awk '{print $2,$3}'; ping -c 2 -W 3 1.1.1.1 2>&1 | tail -2; ping6 -c 2 -W 3 2606:4700:4700::1111 2>&1 | tail -2; true").replace(/\n/g, " | "));
+    const data = randomBytes(8 * 1024 * 1024);
+    startApp(["--es", "invite", await invite(page)]);
+    await connected(page).catch((e) => { console.log("LTE LOG", log().slice(-1800)); throw e; });
+    await page.setInputFiles("#files", { name: "lte.bin", mimeType: "application/octet-stream", buffer: data });
+    console.log((await logged(/RECEIVED lte\.bin .*/, 60_000))[0]);
+    expect(deviceSha(`${FILES}/recv-lte.bin`)).toBe(sha(data));
+  } catch (err) {
+    console.log("LTE LOG", log().slice(-1200));
+    throw err;
+  } finally {
+    adb("shell", "svc", "wifi", "enable");
+    await close();
+  }
+});

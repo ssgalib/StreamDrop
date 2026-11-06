@@ -123,6 +123,7 @@ class SpikeService : Service() {
             "candidate" -> {
                 val c = m.getJSONObject("candidate")
                 val ice = IceCandidate(c.optString("sdpMid"), c.optInt("sdpMLineIndex"), c.getString("candidate"))
+                Log.i(tag, "remote candidate ${ice.sdp.split(" ").let { "${it[2]} ${if (':' in it[4]) "v6" else "v4"} typ ${it[7]}" }}")
                 if (pc?.remoteDescription != null) pc?.addIceCandidate(ice) else pendingCandidates.add(ice)
             }
             "error" -> Log.e(tag, "server error ${m.optString("code")}")
@@ -136,6 +137,7 @@ class SpikeService : Service() {
         val config = PeerConnection.RTCConfiguration(servers).apply { sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN }
         pc = factory.createPeerConnection(config, object : PeerConnection.Observer {
             override fun onIceCandidate(c: IceCandidate) {
+                Log.i(tag, "local candidate ${c.sdp.split(" ").let { "${it[2]} ${if (':' in it[4]) "v6" else "v4"} typ ${it[7]}" }}")
                 loop.execute {
                     val json = JSONObject().put("candidate", c.sdp).put("sdpMid", c.sdpMid).put("sdpMLineIndex", c.sdpMLineIndex)
                     ws?.send(JSONObject().put("type", "candidate").put("candidate", json).toString())

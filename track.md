@@ -270,6 +270,15 @@ Chosen with the user: pair by link, QR or code (no same-network discovery, for p
 - Emulator traps: its virtual Wi-Fi loses beacons every few seconds and drops the network, so boot with `-feature -Wifi`. Large files in a browser test need a persistent profile and enough quota, or they reach the save dialog nobody can press.
 - Not verified, needs a real phone: real speed, the Files-app freeze, Wi-Fi to mobile data, carrier NAT, battery, vendor service killing. The emulator's speed says nothing about those. The M1 gate in the plan is only half passed.
 
+## M1 on a real phone: Pixel 7a, Android 17, home Wi-Fi, direct to this laptop
+- [x] 2 GiB each way, sha256 matches: to the phone 18.3 MiB/s, from the phone 12.0 MiB/s. Process memory peaked at 153 MiB. Battery temperature 37.6 C at the end, on USB power.
+- [x] All 4 quick tests (verified both roles, wrong key, typed code).
+- [x] **The file-picker freeze is gone in a foreground service:** the real DocumentsUI picker opened mid-transfer, then the screen went off, and 512 MiB arrived intact with no drop.
+- [ ] **Carrier NAT: untested.** With Wi-Fi off the phone had no default network within 30 s (only an LTE link that looks like IMS; `mobile_data=1`, SIM state `LOADED,NOT_READY`). The one run that seemed to fail at `ice CHECKING` most likely had no internet at all, so it says nothing about NAT or TURN.
+- [ ] Wi-Fi to mobile data switch mid-transfer: needs mobile data, and reconnect, which the spike lacks.
+- Not measured: battery drain, vendor service killing (a Pixel proves little), Doze, Android 17 limits on long `dataSync` runs.
+- The spike was uninstalled from the phone afterwards.
+
 # plan_3.md: not started
 - M3 Android app: UI, reconnect, resume, SAF and MediaStore, share sheet, Keystore. Most can be built on the emulator.
 - M4 device matrix depends on Android. M5 needs accounts, signing and decisions in section 7.
