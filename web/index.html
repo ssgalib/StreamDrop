@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StreamDrop</title>
+  </head>
+  <body>
+    <main>
+      <h1>StreamDrop</h1>
+
+      <section id="start">
+        <button id="create" type="button">Create Room</button>
+        <form id="join-form">
+          <label>Room token <input id="token-input" required autocomplete="off"></label>
+          <button>Join Room</button>
+        </form>
+      </section>
+
+      <section id="room" hidden>
+        <p id="share" hidden>Share this token: <code id="token"></code></p>
+        <form id="chat">
+          <label>Message <input id="message" maxlength="1000" autocomplete="off" required disabled></label>
+          <button id="send" disabled>Send</button>
+        </form>
+        <ul id="log"></ul>
+      </section>
+
+      <p id="status" role="status">Not connected</p>
+      <p id="error" role="alert"></p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
