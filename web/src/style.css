@@ -553,3 +553,156 @@ progress.is-frozen::-moz-progress-bar {
   *::before,
   *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------------------------------------------------------------------------
+   CONNECTED SCREEN: session bar, drop zone, activity list. Same tokens as above. */
+
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.card-head .card-title { margin: 0; }
+
+.btn-sm { min-height: 2.25rem; padding: 0 var(--space-3); font-size: var(--text-sm); }
+
+/* Join with a code: one compact row under the main button */
+.joinrow { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.joinfields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
+
+.sessionbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+.peer { display: flex; align-items: center; gap: 0.625rem; margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.peer-dot { flex: none; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--success); }
+.sessionbar[data-state="paused"] .peer-dot { background: transparent; border: 2px solid var(--foreground); }
+.sessionbar[data-state="ended"] .peer-dot { background: var(--muted-foreground); }
+@media (prefers-reduced-motion: no-preference) {
+  .sessionbar[data-state="paused"] .peer-dot { animation: sd-pulse 1.6s ease-in-out infinite; }
+}
+
+.ended { display: grid; gap: var(--space-3); justify-items: start; }
+.ended .card-desc { margin: 0; }
+
+/* The one big thing you can do: send files. A whole label, so a click anywhere opens the picker. */
+.dropzone {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-8) var(--space-4);
+  background: var(--card);
+  border: 2px dashed var(--input);
+  border-radius: var(--radius-lg);
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.dropzone:hover,
+.dropzone.is-over { background: var(--accent); border-color: var(--foreground); }
+.dropzone:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
+.dropzone[hidden] { display: none !important; }
+.dz-icon { width: 2rem; height: 2rem; margin-bottom: var(--space-2); color: var(--muted-foreground); }
+.dz-title { font-size: var(--text-lg); font-weight: 600; }
+.dz-sub { color: var(--muted-foreground); font-size: 0.9375rem; font-weight: 400; }
+.dz-link { color: var(--foreground); font-weight: 500; text-decoration: underline; text-underline-offset: 0.2em; }
+
+/* "N files are waiting for you": Accept all / Decline all */
+.bulk {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.bulk p { margin: 0; font-weight: 600; }
+
+/* ACTIVITY: one row per file, either direction */
+.activity { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+#empty { display: none; }
+.activity:empty + #empty { display: block; }
+
+.item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  align-items: start;
+  padding: var(--space-3);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.item-icon {
+  flex: none;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0.5rem;
+  background: var(--muted);
+  border-radius: 50%;
+  color: var(--foreground);
+}
+/* Sending and receiving read differently at a glance: the arrow, plus the words in .item-detail */
+.item[data-dir="send"] .item-icon { background: var(--primary); color: var(--primary-foreground); }
+
+.item-main { min-width: 0; }
+.item-name { margin: 0; font-weight: 600; overflow-wrap: anywhere; line-height: 1.35; }
+.item-detail { margin: 0.125rem 0 0; color: var(--muted-foreground); font-size: var(--text-sm); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.item progress { margin-top: var(--space-2); }
+
+.item-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.item-actions:empty { display: none; }
+.item-actions .btn { flex: 1 1 7rem; }
+.item-actions .btn[hidden] { display: none !important; }
+
+.item[data-state="done"] .item-detail { color: var(--success); }
+.item[data-state="failed"] .item-detail { color: var(--destructive); }
+.item[data-state="declined"],
+.item[data-state="cancelled"] { opacity: 0.75; }
+.item[data-state="paused"] progress { opacity: 0.55; }
+
+@container shell (min-width: 40rem) {
+  .item { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+  .item-actions { grid-column: auto; flex-wrap: nowrap; }
+  .item-actions .btn { flex: none; }
+}
+
+/* UNFINISHED TRANSFERS (after a reload) */
+.unfinished-list { display: grid; gap: var(--space-2); margin: 0 0 var(--space-4); padding: 0; list-style: none; }
+.unfinished-list li { overflow-wrap: anywhere; }
+.unfinished-list .pct { color: var(--muted-foreground); }
+#unfinished-send { margin-bottom: var(--space-4); }
+
+/* "Leave a file for later" is optional, so it starts as one quiet line */
+details.card > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--target);
+  margin: calc(var(--space-1) * -1) 0;
+  cursor: pointer;
+  list-style: none;
+}
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::after {
+  content: "";
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-left: auto;
+  border-right: 2px solid var(--muted-foreground);
+  border-bottom: 2px solid var(--muted-foreground);
+  transform: rotate(45deg);
+}
+details.card[open] > summary { margin-bottom: var(--space-2); }
+details.card[open] > summary::after { transform: rotate(-135deg); }
+
+#pair .actions { margin-top: var(--space-4); }

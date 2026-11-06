@@ -1,4 +1,4 @@
-import type { Meta, Sink } from "./transfer";
+import type { FileInfo, Sink } from "./transfer";
 
 const MEMORY_LIMIT = 512 * 1024 ** 2;
 const OPFS_MAX_AGE = 24 * 60 * 60 * 1000;
@@ -81,9 +81,11 @@ function partsSink(
   let index = firstIndex;
   let written = 0;
   let out: FileSystemWritableFileStream | undefined;
+  let aborted = false;
   return {
     resumable: true,
     async write(data) {
+      if (aborted) return; // a write that was already queued when the file was discarded
       if (!out) {
         out = await (await dir.getFileHandle(partName(index), { create: true })).createWritable();
         written = 0;
@@ -104,9 +106,19 @@ function partsSink(
       downloadBlob(new Blob(files, { type }), name); // a Blob of Files reads lazily: no 20 GiB in memory
     },
     async abort() {
-      try { await out?.abort(); } catch { /* already closed */ }
+      aborted = true;
+      try { await out?.abort(); } catch { /* already closing or closed */ }
       out = undefined;
-      await root.removeEntry(partsDir(id), { recursive: true }).catch(() => {});
+      // A part that is mid-close keeps its file locked for a moment, so removal can fail: retry.
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          await root.removeEntry(partsDir(id), { recursive: true });
+          return;
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "NotFoundError") return;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
     },
   };
 }
@@ -155,7 +167,7 @@ export async function discardParts(id: string) {
 
 // Prefers closed OPFS parts (resumable) when the file has a transfer id and fits, then the save picker.
 // The picker must be called soon after a click; the quota check before it is quick.
-export async function chooseSink(meta: Meta): Promise<Sink> {
+export async function chooseSink(meta: FileInfo & { id?: string }): Promise<Sink> {
   // Safari has OPFS but no createWritable() on the main thread: without it, fall through to the next option.
   const hasOpfs =
     !!navigator.storage && "getDirectory" in navigator.storage &&

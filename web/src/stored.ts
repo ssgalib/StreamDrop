@@ -73,7 +73,7 @@ export async function initStored() {
 
 // A stored-file link: show what is there and let the person download it.
 export async function openStoredLink(link: { id: string; key: string }) {
-  $("#start").hidden = true;
+  $("#home").hidden = true;
   $("#download").hidden = false;
   setStatus("Looking for the file");
   let stored: Stored & { key: CryptoKey };

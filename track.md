@@ -197,3 +197,29 @@ Not verified:
 - **The CSS tokens are stand-ins** (shadcn-style neutral palette): the designer's header says the design system files were not reachable. Swap the three token blocks at the top of `web/src/style.css` for the real values; nothing below them needs editing.
 - Verified: all 16 e2e, 27 unit and Go tests pass; no sideways scroll in 30 renders (phone dark and light, desktop light; 255-character file name, Stored pages, error, reconnecting); screenshots inspected; full transfer and download under the production CSP with zero violations and the stylesheet applied.
 - Not verified: a screen reader; Firefox and Safari rendering (the CSS uses oklch, container queries, `field-sizing` and `content: … / ""`, so very old browsers will look plainer); the real design system.
+
+# Redesign: connect once, then either device can send and receive (built, tested, NOT deployed)
+Chosen with the user: pair by link, QR or code (no same-network discovery, for privacy); both devices get the same screen; send several files at once. Complaints addressed: unclear who sends and who receives, clutter, no progress or history.
+
+## What changed
+- **Protocol:** every file has its own id on the wire. Control messages carry it and data chunks start with the 26-character id, so several transfers share one DataChannel and both devices can send at once. Offers must carry `id` and `fp`; an optional `batch` ties files picked together so "Accept all" covers the batch.
+- **`web/src/transfers.ts` (new):** the engine for every file, either direction, with no page code. One outgoing file streams at a time; incoming ones can arrive meanwhile. Handles offer, accept, decline, cancel, pause with exact offsets, resume, reconnect re-announcements, and validation of everything the other side sends. 20 unit tests wire two engines together in memory.
+- **`web/src/connection.ts` (new):** signaling socket, WebRTC peer, a shared secret (`session`) exchanged over the encrypted channel and used to rejoin, and automatic retry. Nobody else can slip into a reconnecting pair.
+- **Page:** home (one card: Connect a device, join with a code, collapsed "Leave a file for later") -> pairing (QR, link, code) -> one connected screen (session bar, drop zone, "N files are waiting for you" with Accept all / Decline all, activity list with direction icon, name, size, state, progress, speed, time left, per-file Accept / Decline / Cancel, history, Clear finished). Folders are refused with a message. After the other device leaves, one message and the history stays.
+- Resume after a page reload now covers several files per session (receiving: Resume; sending: choose the same files, matched by size and fingerprint).
+
+## Bugs found and fixed by the tests along the way
+- A send on a closing channel was read as a failed file instead of a lost connection (isOpen now checks the channel's real state).
+- A server "peer-left" arriving while the receiver was still saving its offset threw the session away, leaving nothing to reconnect to. About 1 run in 10 hung before the fix; 30 in a row pass after it.
+- Discarding a partial file could fail silently if a part was mid-close (now retries and refuses late writes).
+
+## Verification
+- Go `-race`, 45 unit tests, 25 end-to-end tests in Chromium, `npm audit` clean.
+- e2e covers: both directions, both at once, several files with Accept all, decline, cancel mid-way, drag and drop, Disconnect, used link, bad code; resume after a dropped channel, either device reloading, a different file refused, server restart while paused, Disconnect while paused removing the partial file; Stored mode.
+- Screens rendered at 360 px (dark) and desktop (light) in every state, inspected by eye, no sideways scroll.
+
+## Not verified
+- Not deployed: run `deploy/deploy.sh`.
+- Real phones, Firefox, Safari; a real network cut; the real save picker; a screen reader.
+- Older pages already open in a browser speak the old protocol and won't interoperate with the new one until reloaded.
+- Files that were only offered or waiting their turn are not kept across a reload, only ones that had started.

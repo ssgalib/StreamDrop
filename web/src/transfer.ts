@@ -5,27 +5,68 @@ export const WINDOW = 16 * 1024 * 1024; // max bytes sent but not yet stored
 export const ACK_EVERY = 1024 * 1024;
 export const MAX_SIZE = 20 * 1024 ** 3;
 
-type Channel = { bufferedAmount: number; send(data: string | ArrayBuffer): void };
+export type Channel = { bufferedAmount: number; send(data: string | ArrayBuffer): void };
 
-// id and fp (a fingerprint of the file) are what let an interrupted transfer be resumed; both or neither.
-export type Meta = { name: string; size: number; type: string; id?: string; fp?: string };
+// id names the transfer on the wire; fp (a fingerprint of the file) lets it be resumed. Both are required.
+// batch ties together the files picked at the same time, so the receiver can accept them all at once.
+export type Batch = { id: string; i: number; n: number };
+export type Meta = { name: string; size: number; type: string; id: string; fp: string; batch?: Batch };
 
 const ID_RE = /^[A-Z2-7]{26}$/; // same shape as the server's room ids
 const FP_RE = /^[0-9a-f]{64}$/;
+export const MAX_FILES = 500;
+export const isId = (s: unknown): s is string => typeof s === "string" && ID_RE.test(s);
+
+export type FileInfo = { name: string; size: number; type: string };
 
 // The other person controls every field, so check them all before showing a prompt.
-export function parseMeta(m: any): Meta | null {
-  const { name, size, type, id, fp } = m ?? {};
+export function parseFileInfo(m: any): FileInfo | null {
+  const { name, size, type } = m ?? {};
   if (typeof name !== "string" || !name || name.length > 255) return null;
   if (!Number.isSafeInteger(size) || size < 0 || size > MAX_SIZE) return null;
   if (typeof type !== "string") return null;
-  if ((id === undefined) !== (fp === undefined)) return null;
-  if (id !== undefined && !(ID_RE.test(id) && FP_RE.test(fp))) return null;
+  return { name, size, type: /^[\w.+-]+\/[\w.+-]+$/.test(type) ? type : "application/octet-stream" };
+}
+
+export function parseMeta(m: any): Meta | null {
+  const info = parseFileInfo(m);
+  const { id, fp, batch } = m ?? {};
+  if (!info) return null;
+  if (typeof id !== "string" || !ID_RE.test(id) || typeof fp !== "string" || !FP_RE.test(fp)) return null;
+  let b: Batch | undefined;
+  if (batch !== undefined) {
+    const { id: bid, i, n } = batch ?? {};
+    if (typeof bid !== "string" || !ID_RE.test(bid) || !Number.isSafeInteger(i) || !Number.isSafeInteger(n)) return null;
+    if (n < 1 || n > MAX_FILES || i < 0 || i >= n) return null;
+    b = { id: bid, i, n };
+  }
+  return { ...info, id, fp, ...(b && { batch: b }) };
+}
+
+// Several transfers share one DataChannel, so every chunk starts with the 26-character id of its transfer.
+export const ID_LEN = 26;
+
+export function frame(id: string, data: ArrayBuffer): ArrayBuffer {
+  const out = new Uint8Array(ID_LEN + data.byteLength);
+  out.set(new TextEncoder().encode(id));
+  out.set(new Uint8Array(data), ID_LEN);
+  return out.buffer;
+}
+
+export function parseFrame(buf: ArrayBuffer): { id: string; data: ArrayBuffer } | null {
+  if (buf.byteLength < ID_LEN) return null;
+  const id = new TextDecoder().decode(new Uint8Array(buf, 0, ID_LEN));
+  return ID_RE.test(id) ? { id, data: buf.slice(ID_LEN) } : null;
+}
+
+// A channel that tags everything it sends with a transfer id. It asks for the current channel on every
+// call, so a transfer that outlives a reconnect keeps working on the new connection.
+export function framed(get: () => Channel, id: string): Channel {
   return {
-    name,
-    size,
-    type: /^[\w.+-]+\/[\w.+-]+$/.test(type) ? type : "application/octet-stream",
-    ...(id !== undefined && { id, fp }),
+    get bufferedAmount() { return get().bufferedAmount; },
+    send(data) {
+      get().send(typeof data === "string" ? JSON.stringify({ ...JSON.parse(data), id }) : frame(id, data));
+    },
   };
 }
 

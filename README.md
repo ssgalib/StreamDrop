@@ -9,19 +9,26 @@ Live: https://streamdrop.kurohane.xyz
 
 ## How it works
 
-1. The sender opens the site and clicks **Create Room**. An invite link `https://host/#token` appears, with a QR code of the same link.
-2. The receiver opens the link (or scans the QR code with a phone camera) (the token after `#` never reaches the server) and both pages connect.
-3. The sender picks a file, the receiver clicks **Accept**, and the bytes flow browser to browser.
+1. On one device click **Connect a device**. An invite link and a QR code appear.
+2. On the other device open the link (or scan the code, or paste the code into "Have a code?").
+3. Both devices now show the **same screen**: a drop zone and one activity list. **Either device can send
+   and either can receive**, at the same time if you like.
+4. Pick or drop one file or many. The other device sees each one as a row ("Wants to send you this file")
+   and presses **Accept** (or **Accept all**). Rows show the direction, the file, progress, speed, time left,
+   and stay as history until you clear them.
 
-The token works for joining for 10 minutes and for one receiver. Each room holds exactly two people.
+The invite works for joining for 10 minutes and for one other device. A connected pair stays together for as
+long as the pages are open; **Disconnect** ends it.
 
 If the connection drops mid-transfer, both pages keep what they have and reconnect on their own, and the
 transfer continues from where the receiver stopped (see "Interruptions" below).
 
 ## Limits
 
-- In direct mode both people must keep the page open until the transfer ends. For a sender who needs to
-  leave, use Stored mode.
+- In direct mode both devices must keep the page open until the transfer ends. To hand a file over when
+  the other device isn't there, use Stored mode ("Leave a file for later").
+- Folders can't be sent: zip them first. Up to 500 files can be offered at once; one outgoing file streams
+  at a time and the rest wait their turn, while an incoming file can arrive meanwhile.
 - Connections try a direct path first, using a public STUN server (`stun.cloudflare.com`, set in
   `web/src/peer.ts`; it sees each browser's public IP, never the file). If no direct path works, an
   optional TURN relay on the VPS carries the file (see "Relay" below). Without the relay, browsers behind
@@ -42,14 +49,15 @@ transfer continues from where the receiver stopped (see "Interruptions" below).
 |---|---|
 | Connection drops, both tabs stay open | Resumes by itself, nothing lost |
 | Server restarts or is deployed | Resumes by itself once it is back |
-| Receiver reloads or closes the tab (parts sink) | After a reload, click **Resume**; loses at most the open 64 MiB part |
-| Sender reloads or closes the tab | After a reload, choose the same file; the receiver loses nothing |
-| Different file chosen on resume | Refused ("This isn't the same file"); a fingerprint of the size, date and first and last MiB is compared |
+| The device receiving reloads or closes the tab (parts sink) | After a reload, click **Resume receiving**; loses at most the open 64 MiB part |
+| The device sending reloads or closes the tab | After a reload, choose the same files again; nothing is lost on the receiving side |
+| A different file chosen on resume | Refused ("Not the same file: name"); a fingerprint of the size, date and first and last MiB is compared |
 | Receiver used the save picker or memory | Survives a drop with both tabs open, but not a reload |
-| The other person never comes back | **Cancel** discards the partial file; unfinished partial files are removed after 24 hours |
+| The other device never comes back | **Disconnect** discards the partial files; unfinished partial files are removed after 24 hours |
 
-If the connection drops after the receiver has everything but before "Complete" reaches the sender, the
-sender keeps showing "Reconnecting…" until it presses Cancel. The file did arrive.
+If the connection drops after the receiving device has everything but before "Sent" reaches the sending one,
+the sender keeps showing "Reconnecting…" until it presses Disconnect. The file did arrive. Files that were
+only offered or waiting their turn are not kept across a page reload; only files that had started are.
 - Mobile browsers may suspend background tabs and stop a transfer.
 
 Tested: Chromium on Linux (Playwright; a 2 GiB transfer on the parts sink at 47 MiB/s; every row of the
@@ -70,7 +78,7 @@ Checks:
 ```bash
 cd server && go vet ./... && go test -race ./...
 cd web && npm run build && npm test      # type-check + unit tests
-cd web && npm run test:e2e               # direct, resume and Stored tests (starts Vite and its own Go servers; port 8080 must be free)
+cd web && npm run test:e2e               # either-way, resume and Stored tests (starts Vite and its own Go servers; port 8080 must be free)
 CROSS_BROWSER=1 npm run test:e2e         # also Firefox/WebKit pairs (needs a working Playwright Firefox/WebKit)
 ```
 
@@ -136,7 +144,7 @@ Test the relay by opening the site with `?relay=1` on both sides (this forbids d
 
 ## Stored mode, optional
 
-Off by default. When on, the start page gets an **Upload for later** form. The file is encrypted in the
+Off by default. When on, the start page gets a collapsed **Leave a file for later** panel. The file is encrypted in the
 sender's browser (AES-256-GCM, 8 MiB chunks, one fresh key per file), uploaded in chunks, and kept on the
 VPS for 24 hours. The link `https://host/#s/<id>.<key>` carries the key after `#`, so the server holds
 only ciphertext and an encrypted name. The server can't scan or inspect files, and a downloader's browser
@@ -183,9 +191,10 @@ Nothing needs backing up: the app has no database, and stored files are temporar
 
 ```
 server/            Go server (hub.go rooms and rejoin, signal.go handler and limits, store.go Stored mode, budget.go, loadtest/)
-web/src/           main.ts page logic, peer.ts WebRTC, qr.ts QR code, transfer.ts chunking, flow control and resume,
-                   sinks.ts storage, store.ts and stored.ts Stored mode
-web/e2e/           Playwright tests: direct, resume (reloads, drops, server restart), Stored
+web/src/           main.ts the page, connection.ts signaling + WebRTC + rejoin, transfers.ts the engine (every file,
+                   either direction), transfer.ts chunking, flow control and framing, sinks.ts storage, peer.ts WebRTC,
+                   qr.ts QR code, store.ts and stored.ts Stored mode
+web/e2e/           Playwright tests: either-way transfers, resume (reloads, drops, server restart), Stored
 deploy/            nginx config, systemd unit, deploy and install scripts, optional coturn setup (install-turn.sh)
 plan.md, project-plan.md, track.md   plans and progress
 ```

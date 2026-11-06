@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CHUNK, HIGH_WATER, WINDOW, MAX_SIZE, createReceiver, createSender, fingerprint, newTransferId, parseMeta, parseResume, parseResumeAt, type Sink } from "./transfer.ts";
+import { CHUNK, HIGH_WATER, WINDOW, MAX_SIZE, createReceiver, createSender, fingerprint, frame, framed, newTransferId, parseFrame, parseMeta, parseResume, parseResumeAt, type Sink } from "./transfer.ts";
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -103,7 +103,7 @@ test("failing sink.write calls fail", async () => {
 });
 
 test("invalid meta fields are rejected", () => {
-  const ok = { name: "a.txt", size: 5, type: "text/plain" };
+  const ok = { name: "a.txt", size: 5, type: "text/plain", id: "A".repeat(26), fp: "b".repeat(64) };
   assert.deepEqual(parseMeta(ok), ok);
   const bad = [
     null, "x",
@@ -118,15 +118,45 @@ test("invalid meta fields are rejected", () => {
 const ID = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".slice(0, 26);
 const FP = "a".repeat(64);
 
-test("meta with id and fp: both or neither, each well formed", () => {
-  const ok = { name: "a.txt", size: 5, type: "text/plain" };
-  assert.deepEqual(parseMeta({ ...ok, id: ID, fp: FP }), { ...ok, id: ID, fp: FP });
+test("meta needs a well formed id and fingerprint, and a sane batch", () => {
+  const ok = { name: "a.txt", size: 5, type: "text/plain", id: ID, fp: FP };
+  assert.deepEqual(parseMeta(ok), ok);
   const bad = [
-    { ...ok, id: ID }, { ...ok, fp: FP },
-    { ...ok, id: ID.toLowerCase(), fp: FP }, { ...ok, id: ID + "A", fp: FP }, { ...ok, id: "../" + ID.slice(3), fp: FP },
-    { ...ok, id: 5, fp: FP }, { ...ok, id: ID, fp: "zz" }, { ...ok, id: ID, fp: FP.toUpperCase() }, { ...ok, id: ID, fp: 7 },
+    { name: "a", size: 5, type: "t" }, { ...ok, id: undefined }, { ...ok, fp: undefined },
+    { ...ok, id: ID.toLowerCase() }, { ...ok, id: ID + "A" }, { ...ok, id: "../" + ID.slice(3) },
+    { ...ok, id: 5 }, { ...ok, fp: "zz" }, { ...ok, fp: FP.toUpperCase() }, { ...ok, fp: 7 },
   ];
   for (const m of bad) assert.equal(parseMeta(m), null, JSON.stringify(m));
+  const batch = { id: ID, i: 0, n: 3 };
+  assert.deepEqual(parseMeta({ ...ok, batch })?.batch, batch);
+  for (const b of [{ ...batch, i: 3 }, { ...batch, i: -1 }, { ...batch, n: 0 }, { ...batch, n: 501 }, { ...batch, id: "x" }, { ...batch, i: 1.5 }, "x", { i: 0 }]) {
+    assert.equal(parseMeta({ ...ok, batch: b }), null, JSON.stringify(b));
+  }
+});
+
+test("frames carry the transfer id, and a bad header is refused", () => {
+  const data = new Uint8Array([1, 2, 3, 4, 5]).buffer;
+  const f = parseFrame(frame(ID, data));
+  assert.equal(f?.id, ID);
+  assert.deepEqual(new Uint8Array(f!.data), new Uint8Array(data));
+  assert.equal(parseFrame(new Uint8Array(10).buffer), null, "too short");
+  assert.equal(parseFrame(frame("a".repeat(26), data)), null, "lowercase is not an id");
+  assert.equal(parseFrame(frame("../".padEnd(26, "A"), data)), null, "path characters are not an id");
+  assert.equal(parseFrame(frame(ID, new ArrayBuffer(0)))?.data.byteLength, 0, "an empty payload is allowed");
+});
+
+test("framed() tags binary data and control messages with the id, on whichever channel is current", () => {
+  const sent: (string | ArrayBuffer)[][] = [[], []];
+  let which = 0;
+  const ch = framed(() => ({ bufferedAmount: which * 10, send: (d) => void sent[which].push(d) }), ID);
+  ch.send(new Uint8Array([9]).buffer);
+  ch.send(JSON.stringify({ t: "ack", bytes: 5 }));
+  which = 1; // a reconnect swapped the channel
+  ch.send(JSON.stringify({ t: "done" }));
+  assert.equal(ch.bufferedAmount, 10);
+  assert.equal(parseFrame(sent[0][0] as ArrayBuffer)?.id, ID);
+  assert.deepEqual(JSON.parse(sent[0][1] as string), { t: "ack", bytes: 5, id: ID });
+  assert.deepEqual(JSON.parse(sent[1][0] as string), { t: "done", id: ID });
 });
 
 test("transfer ids are 26 base32 characters and differ", () => {

@@ -16,6 +16,7 @@
   <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.9-3"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.9 3"/><path d="M20 20v-4h-4"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
 </svg>
 
 <div class="shell">
@@ -35,46 +36,40 @@
     <p class="alert" id="error" role="alert" hidden></p>
     <p class="back" id="back"><a class="btn btn-outline" href="./">Start a new transfer</a></p>
 
-    <!-- 1. Start page -->
+    <!-- Transfers that were interrupted by closing or reloading the page -->
     <section id="unfinished" class="card" aria-labelledby="unfinished-title" hidden>
-      <h2 class="card-title" id="unfinished-title">Unfinished transfer</h2>
-      <p class="filerow"><span class="name" id="unfinished-name"></span> <span class="pct" id="unfinished-pct"></span></p>
-      <div class="stack-sm" id="unfinished-sender" hidden>
-        <div>
-          <label for="resume-file">Choose the same file to continue</label>
-          <input type="file" id="resume-file">
-        </div>
+      <h2 class="card-title" id="unfinished-title">Unfinished transfers</h2>
+      <ul class="unfinished-list" id="unfinished-list"></ul>
+      <div id="unfinished-send" hidden>
+        <label for="resume-files">Choose the same files to continue sending them</label>
+        <input type="file" id="resume-files" multiple>
       </div>
       <div class="actions">
-        <button type="button" class="btn btn-primary" id="resume">Resume</button>
+        <button type="button" class="btn btn-primary" id="resume" hidden>Resume receiving</button>
         <button type="button" class="btn btn-outline" id="discard">Discard</button>
       </div>
     </section>
 
-    <div class="stack" id="start">
-      <p class="tagline">Send a file straight from one browser to another.</p>
+    <!-- 1. Home: one thing to do -->
+    <div class="stack" id="home">
+      <p class="tagline">Send files straight between two devices. Nothing is stored on a server.</p>
 
       <section class="card" aria-labelledby="create-title">
-        <h2 class="card-title" id="create-title">Send a file</h2>
-        <p class="card-desc">Create a room, share the link, and the file goes directly to the other device.</p>
-        <button type="button" class="btn btn-primary btn-block" id="create">Create Room</button>
-      </section>
-
-      <section class="card" aria-labelledby="join-title">
-        <h2 class="card-title" id="join-title">Join a room</h2>
-        <p class="card-desc">Have a token instead of a link? Enter it here.</p>
-        <form class="stack-sm" id="join-form">
-          <div>
-            <label for="token-input">Room token</label>
-            <input type="text" id="token-input" name="token" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Paste your room token" required>
+        <h2 class="card-title" id="create-title">Connect two devices</h2>
+        <p class="card-desc">Once they are connected, either device can send and receive files.</p>
+        <button type="button" class="btn btn-primary btn-block" id="create">Connect a device</button>
+        <form class="joinrow" id="join-form">
+          <label for="token-input">Have a code?</label>
+          <div class="joinfields">
+            <input type="text" id="token-input" name="token" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Paste it here" required>
+            <button type="submit" class="btn btn-outline">Join</button>
           </div>
-          <button type="submit" class="btn btn-outline btn-block">Join Room</button>
         </form>
       </section>
 
       <!-- Optional: the server turns this on -->
-      <section class="card" id="stored" aria-labelledby="stored-title" hidden>
-        <h2 class="card-title" id="stored-title">Upload for later</h2>
+      <details class="card" id="stored" hidden>
+        <summary class="card-title" id="stored-title">Leave a file for later</summary>
         <p class="card-desc">Keep a file on the server for a limited time so the other person can download it when they are ready.</p>
         <div class="stack-sm">
           <div>
@@ -104,66 +99,72 @@
           <p class="hint" id="store-expiry"></p>
           <button type="button" class="btn btn-danger" id="store-delete"><svg aria-hidden="true"><use href="#i-trash"/></svg>Delete now</button>
         </div>
-      </section>
+      </details>
     </div>
 
-    <!-- 2–5. Room (sender and receiver) -->
-    <section class="stack" id="room" aria-label="Transfer room" hidden>
 
-      <div class="card" id="share" hidden>
-        <h2 class="card-title">Invite someone</h2>
-        <p class="card-desc">Open the link or scan the code on the other device.</p>
-        <div class="invite">
-          <div class="qr-frame" id="qr"><svg class="qr-svg" id="qr-code" viewBox="0 0 37 37" role="img" aria-label="QR code for the invite link"></svg></div>
-          <div class="stack-sm">
-            <div>
-              <label for="link">Invite link</label>
-              <div class="copyrow">
-                <textarea id="link" readonly rows="3"></textarea>
-                <button type="button" class="btn btn-outline" id="copy"><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
-              </div>
+    <!-- 2. Pairing: show the code, wait for the other device -->
+    <section class="card" id="pair" aria-labelledby="pair-title" hidden>
+      <h2 class="card-title" id="pair-title">Connect a device</h2>
+      <p class="card-desc">On the other device, open this link or scan the code.</p>
+      <div class="invite" id="share">
+        <div class="qr-frame" id="qr"><svg class="qr-svg" id="qr-code" viewBox="0 0 37 37" role="img" aria-label="QR code for the invite link"></svg></div>
+        <div class="stack-sm">
+          <div>
+            <label for="link">Invite link</label>
+            <div class="copyrow">
+              <textarea id="link" readonly rows="3"></textarea>
+              <button type="button" class="btn btn-outline" id="copy"><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
             </div>
-            <p class="tokenrow"><span class="hint">Or enter this token:</span> <code class="token" id="token"></code></p>
           </div>
+          <p class="tokenrow"><span class="hint">Or enter this code:</span> <code class="token" id="token"></code></p>
         </div>
       </div>
-
-      <div class="card" id="renew" hidden>
-        <h2 class="card-title">Link expired.</h2>
-        <p class="card-desc">Create a new link to invite the other device.</p>
+      <div id="renew" hidden>
+        <p class="card-desc">This link has expired. Create a new one to invite the other device.</p>
         <button type="button" class="btn btn-primary" id="renew-btn"><svg aria-hidden="true"><use href="#i-refresh"/></svg>Create New Link</button>
       </div>
+      <div class="actions"><button type="button" class="btn btn-outline" id="cancel-pair">Cancel</button></div>
+    </section>
 
-      <p class="note">Keep both tabs open until the transfer finishes.</p>
+    <!-- 3. Connected: the same screen on both devices -->
+    <section class="stack" id="session" aria-label="Connected devices" hidden>
 
-      <div class="card" id="sender" hidden>
-        <h2 class="card-title">Choose a file to send</h2>
-        <p class="card-desc">The other person will be asked to accept it first.</p>
-        <label for="file">File</label>
-        <input type="file" id="file">
+      <div class="sessionbar">
+        <p class="peer"><span class="peer-dot" aria-hidden="true"></span><span id="peer-state">Connected to the other device</span></p>
+        <button type="button" class="btn btn-outline" id="leave">Disconnect</button>
       </div>
 
-      <div class="card" id="offer" role="group" aria-labelledby="offer-title" hidden>
-        <h2 class="card-title" id="offer-title">Incoming file</h2>
-        <p class="filename" id="offer-name" tabindex="0"></p>
-        <dl class="facts">
-          <dt>Size</dt>
-          <dd id="offer-size"></dd>
-        </dl>
+      <div class="card ended" id="ended" hidden>
+        <p class="card-desc" id="ended-text">The other device disconnected.</p>
+        <button type="button" class="btn btn-primary" id="restart">Start a new connection</button>
+      </div>
+
+      <label class="dropzone" id="dropzone" for="files">
+        <svg class="dz-icon" aria-hidden="true"><use href="#i-upload"/></svg>
+        <span class="dz-title">Drop files to send</span>
+        <span class="dz-sub">or <span class="dz-link">choose files</span>. The other device will be asked to accept them.</span>
+        <input type="file" id="files" class="visually-hidden" multiple>
+      </label>
+
+      <div class="bulk" id="bulk" hidden>
+        <p id="bulk-text">Files are waiting for you</p>
         <div class="actions">
-          <button type="button" class="btn btn-primary" id="accept">Accept</button>
-          <button type="button" class="btn btn-outline" id="decline">Decline</button>
+          <button type="button" class="btn btn-primary" id="accept-all">Accept all</button>
+          <button type="button" class="btn btn-outline" id="decline-all">Decline all</button>
         </div>
       </div>
 
-      <div class="card" id="transfer" hidden>
-        <p class="filename" id="transfer-name" tabindex="0"></p>
-        <label class="visually-hidden" for="progress">Transfer progress</label>
-        <progress id="progress" max="100" value="0"></progress>
-        <p class="progress-text" id="pct"></p>
-        <button type="button" class="btn btn-outline" id="cancel">Cancel</button>
-      </div>
+      <section class="card" aria-labelledby="activity-title">
+        <div class="card-head">
+          <h2 class="card-title" id="activity-title">Activity</h2>
+          <button type="button" class="btn btn-outline btn-sm" id="clear" hidden>Clear finished</button>
+        </div>
+        <ol class="activity" id="activity"></ol>
+        <p class="hint" id="empty">Files you send or receive show up here.</p>
+      </section>
 
+      <p class="note" id="note" hidden>Keep both tabs open while files are moving. If the connection drops, they carry on by themselves.</p>
     </section>
 
     <!-- 6. Stored mode: download page -->

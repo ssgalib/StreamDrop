@@ -1,607 +1,440 @@
-import { createPeer, type Signal } from "./peer";
-import {
-  CHUNK, createReceiver, createSender, fingerprint, newTransferId, parseMeta, parseResume, parseResumeAt,
-  type Meta, type Sink,
-} from "./transfer";
+import { createConnection, type Phase } from "./connection";
+import { createTransfers, type Item, type Saved } from "./transfers";
 import { chooseSink, cleanOpfs, discardParts, openParts, partsOffset } from "./sinks";
+import { fingerprint, isId, parseMeta } from "./transfer";
 import { drawQr } from "./qr";
-import { fmtSize } from "./format";
-import { flashCopied, setStatus, showError } from "./ui";
+import { fmtSize, fmtTime } from "./format";
 import { initStored, openStoredLink } from "./stored";
 import { parseStoredLink } from "./store";
+import { flashCopied, setStatus, showError } from "./ui";
 import "./style.css";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
-const startSection = $("#start");
-const roomSection = $("#room");
-const shareP = $("#share");
-const tokenEl = $("#token");
-const linkEl = $<HTMLInputElement>("#link");
-const copyBtn = $("#copy");
-const renewDiv = $("#renew");
-const qrDiv = $("#qr");
-const tokenInput = $<HTMLInputElement>("#token-input");
-const senderDiv = $("#sender");
-const fileInput = $<HTMLInputElement>("#file");
-const offerDiv = $("#offer");
-const transferDiv = $("#transfer");
-const progressEl = $<HTMLProgressElement>("#progress");
-const pctEl = $("#pct");
-const transferNameEl = $("#transfer-name");
-const unfinishedSection = $("#unfinished");
-const resumeBtn = $("#resume");
-const resumeFile = $<HTMLInputElement>("#resume-file");
+const homeEl = $("#home");
+const pairEl = $("#pair");
+const sessionEl = $("#session");
+const sessionBar = $(".sessionbar");
+const peerState = $("#peer-state");
+const dropzone = $("#dropzone");
+const filesInput = $<HTMLInputElement>("#files");
+const endedEl = $("#ended");
+const bulkEl = $("#bulk");
+const activityEl = $("#activity");
+const clearBtn = $("#clear");
+const noteEl = $("#note");
+const leaveBtn = $("#leave");
 
-
-const errorText: Record<string, string> = {
-  "bad-message": "The server rejected a message.",
-  "invalid-token": "That link isn't valid. Ask the sender for a new one.",
-  expired: "This link has expired. Ask the sender for a new one.",
-  "room-full": "This link has already been used.",
-  "already-in-room": "Already in a room.",
-  "not-paired": "No peer is connected yet.",
-  "server-busy": "The server is busy. Try again later.",
-};
-
-function fmtTime(s: number) {
-  if (s < 60) return `${Math.ceil(s)} s`;
-  if (s < 3600) return `${Math.ceil(s / 60)} min`;
-  return `${(s / 3600).toFixed(1)} h`;
+type View = "none" | "home" | "pair" | "session";
+function view(v: View) {
+  homeEl.hidden = v !== "home";
+  pairEl.hidden = v !== "pair";
+  sessionEl.hidden = v !== "session";
+  // The connected screen shows its own state, so the status line goes quiet there (screen readers still hear it)
+  $("#status").classList.toggle("visually-hidden", v === "session");
 }
 
-let samples: [number, number][] = []; // [time, bytes] over the last 5 s, for a steady speed
-let lastPaint = 0;
+// ---------------------------------------------------------------- connection and transfers
 
-function showProgress(done: number, total: number) {
-  const now = performance.now();
-  if (done === 0) samples = [];
-  samples.push([now, done]);
-  while (samples.length > 1 && now - samples[0][0] > 5000) samples.shift();
-  if (done > 0 && done < total && now - lastPaint < 500) return; // at most twice a second
-  lastPaint = now;
-  progressEl.max = total || 1;
-  progressEl.value = done;
-  const [t0, b0] = samples[0];
-  const rate = now > t0 ? ((done - b0) * 1000) / (now - t0) : 0;
-  let text = `${total ? Math.floor((done / total) * 100) : 100}% · ${fmtSize(done)} of ${fmtSize(total)}`;
-  if (rate > 0 && done < total) text += ` · ${fmtSize(rate)}/s · ${fmtTime((total - done) / rate)} left`;
-  pctEl.textContent = text;
-}
+const RECORD_KEY = "streamdrop-session";
+type Record = { session: string; items: Saved[] };
 
-let ws: WebSocket | undefined;
-let peer: ReturnType<typeof createPeer> | undefined;
-let channelOpen = false;
-
-// One transfer at a time. "offered": meta sent or received, waiting for Accept. "active": bytes flowing.
-// "paused": the connection dropped; both sides keep what they have and reconnect through the same transfer id.
-type Role = "sender" | "receiver";
-let state: "idle" | "offered" | "active" | "paused" = "idle";
-let role: Role | undefined;
-let transferId: string | undefined; // set when both sides can resume
-let transferFp: string | undefined;
-let transferMeta: Meta | undefined;
-let resumeOffset = 0; // receiver: bytes already stored
-let pendingFile: File | undefined;
-let incoming: Meta | undefined;
-let sender: ReturnType<typeof createSender> | undefined;
-let receiver: ReturnType<typeof createReceiver> | undefined;
-let sink: Sink | undefined;
-let lock: WakeLockSentinel | null = null;
-let retryTimer: ReturnType<typeof setTimeout> | undefined;
-
-// Closing the tab mid-transfer would lose the file.
-addEventListener("beforeunload", (e) => { if (state === "active" || state === "paused") e.preventDefault(); });
-
-// What an interrupted transfer needs after a reload. Reads are wrapped: storage can be blocked.
-const RECORD_KEY = "streamdrop-transfer";
-type SavedTransfer = Meta & { id: string; fp: string; role: Role };
-
-function saveRecord() {
+// What a reload needs to carry on. Reads are wrapped and validated: storage can be blocked or edited.
+function saveRecords(items: Saved[]) {
   try {
-    if (transferId && transferFp && role && transferMeta) {
-      localStorage.setItem(RECORD_KEY, JSON.stringify({ ...transferMeta, id: transferId, fp: transferFp, role }));
-    }
-  } catch { /* storage blocked: the transfer just can't resume after a reload */ }
+    if (items.length && conn.session) localStorage.setItem(RECORD_KEY, JSON.stringify({ session: conn.session, items }));
+    else localStorage.removeItem(RECORD_KEY);
+  } catch { /* storage blocked: files just can't resume after a reload */ }
 }
 
-function clearRecord() {
-  try { localStorage.removeItem(RECORD_KEY); } catch { /* ignore */ }
-}
-
-function loadRecord(): SavedTransfer | null {
+function loadRecords(): Record | null {
   try {
     const raw = JSON.parse(localStorage.getItem(RECORD_KEY) ?? "null");
-    const m = parseMeta(raw); // the stored text is untrusted too
-    if (m?.id && m.fp && (raw.role === "sender" || raw.role === "receiver")) return { ...m, id: m.id, fp: m.fp, role: raw.role };
-  } catch { /* none or corrupt */ }
-  return null;
+    if (!isId(raw?.session) || !Array.isArray(raw.items)) return null;
+    const items: Saved[] = [];
+    for (const r of raw.items.slice(0, 500)) {
+      const m = parseMeta(r);
+      if (m && (r.dir === "send" || r.dir === "receive")) items.push({ id: m.id, dir: r.dir, name: m.name, size: m.size, type: m.type, fp: m.fp });
+    }
+    return items.length ? { session: raw.session, items } : null;
+  } catch {
+    return null;
+  }
 }
 
-const sendCtl = (m: object) => peer!.channel().send(JSON.stringify(m));
+const conn = createConnection({
+  phase(p: Phase) {
+    switch (p) {
+      case "waiting": view("pair"); setStatus("Waiting for the other device"); break;
+      case "connecting": view("none"); setStatus("Connecting"); break;
+      case "open": view("session"); setSessionState("open"); setStatus("Connected"); break;
+      case "reconnecting": view("session"); setSessionState("paused"); setStatus("Reconnecting…"); break;
+      case "idle": setStatus(""); break;
+    }
+  },
+  invite(token) {
+    const link = `${location.origin}/#${token}`;
+    $("#token").textContent = token;
+    $<HTMLTextAreaElement>("#link").value = link;
+    drawQr($<SVGSVGElement & HTMLElement>("#qr-code"), link);
+    $("#share").hidden = false;
+    $("#renew").hidden = true;
+    $("#copy").focus();
+  },
+  inviteExpired() {
+    $("#share").hidden = true;
+    $("#renew").hidden = false;
+    setStatus("Link expired");
+  },
+  open(reconnected) {
+    endedEl.hidden = true;
+    dropzone.hidden = false;
+    leaveBtn.hidden = false;
+    showError("");
+    transfers.onOpen(reconnected);
+  },
+  message: (data) => void transfers.onMessage(data),
+  low: () => transfers.onLow(),
+  async lost() {
+    await transfers.onLost(); // files that were moving pause with exact offsets
+    if (transfers.hasUnfinished()) conn.rejoin(); // something is still in progress: get back together
+    else ended("The other device disconnected.");
+  },
+  error(text) {
+    showError(text);
+    // a failed pairing or join goes back to the start; an open session stays as it is
+    if (!sessionEl.hidden) return;
+    conn.leave();
+    view("home");
+  },
+});
 
-function resetTransfer() {
-  state = "idle";
-  clearTimeout(retryTimer);
-  pendingFile = incoming = sender = receiver = sink = undefined;
-  role = transferId = transferFp = transferMeta = undefined;
-  resumeOffset = 0;
-  clearRecord();
-  offerDiv.hidden = transferDiv.hidden = true;
-  progressEl.classList.remove("is-frozen");
-  void lock?.release();
-  lock = null;
-  fileInput.value = "";
-  fileInput.disabled = !channelOpen;
+const transfers = createTransfers({
+  send: (m) => conn.send(m),
+  channel: () => conn.channel(),
+  channelOpen: () => conn.isOpen(),
+  maxMessage: () => conn.maxMessage(),
+  chooseSink,
+  save: saveRecords,
+  changed: scheduleRender,
+  warn: showError,
+});
+
+function setSessionState(s: "open" | "paused" | "ended") {
+  sessionBar.dataset.state = s;
+  peerState.textContent = s === "open" ? "Connected to the other device" : s === "paused" ? "Reconnecting…" : "Disconnected";
 }
 
-// Stop a transfer that did not finish: drop what was received and tell the user why.
-function endTransfer(message: string) {
-  const wasPaused = state === "paused";
-  sender?.cancel();
-  void sink?.abort();
-  resetTransfer();
-  if (wasPaused) leaveRoom(); // nobody is coming back: stop waiting in the room
-  showError(message);
+// The connection is over and nothing is left to finish. History stays visible.
+function ended(text: string) {
+  conn.leave();
+  setSessionState("ended");
+  setStatus("Disconnected");
+  $("#ended-text").textContent = text;
+  endedEl.hidden = false;
+  dropzone.hidden = true;
+  leaveBtn.hidden = true; // nothing left to disconnect from
+  scheduleRender();
 }
 
-// Drop the signaling socket and any half-built connection, and go back to the start page.
-function leaveRoom() {
-  if (ws) ws.onmessage = ws.onclose = ws.onerror = null;
-  ws?.close();
-  ws = undefined;
-  peer?.close();
-  peer = undefined;
-  channelOpen = false;
-  startSection.hidden = false;
-  roomSection.hidden = true;
-  setStatus("Not connected");
+function goHome() {
+  transfers.cancelAll();
+  conn.leave();
+  transfers.clearFinished();
+  endedEl.hidden = true;
+  dropzone.hidden = false;
+  leaveBtn.hidden = false;
+  view("home");
+  setStatus("");
+  showError("");
 }
 
-// Local failure: also tell the peer so it stops too.
-function abortTransfer(message: string) {
-  try { sendCtl({ t: "cancel" }); } catch { /* channel already gone */ }
-  endTransfer(message);
+// ---------------------------------------------------------------- the activity list
+
+let renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  // animation frames pause in background tabs, so fall back to a timer there
+  const run = () => {
+    if (!renderQueued) return;
+    renderQueued = false;
+    render();
+  };
+  requestAnimationFrame(run);
+  setTimeout(run, 250);
 }
 
-const fail = (err: unknown) => {
-  // Already paused: a send or write that was in flight when the connection dropped. Nothing is wrong.
-  if (state === "paused") return;
-  // A send or write that fails because the channel died is a lost connection, not a failed transfer:
-  // pause, and carry on when both sides are back. pause() is defined below; calls happen later.
-  if (state === "active" && transferId && peer && peer.channel().readyState !== "open") return pause();
-  abortTransfer(
-    err instanceof Error && err.name === "QuotaExceededError"
-      ? "Not enough disk space"
-      : err instanceof Error ? err.message : String(err),
+const rows = new Map<string, HTMLLIElement>();
+
+function describe(it: Item): string {
+  const size = fmtSize(it.size);
+  switch (it.state) {
+    case "offered":
+      if (it.dir === "send") return `${size} · Waiting for the other device to accept`;
+      return it.needsClick ? `${size} · Click Accept to choose where to save it` : `${size} · Wants to send you this file`;
+    case "waiting": return it.dir === "send" ? `${size} · Accepted, waiting for its turn` : `${size} · Starting…`;
+    case "active": {
+      if (it.note) return `${size} · ${it.note}`; // e.g. Finalizing…
+      const pct = it.size ? Math.floor((it.bytes / it.size) * 100) : 100;
+      let text = `${it.dir === "send" ? "Sending" : "Receiving"} · ${pct}% · ${fmtSize(it.bytes)} of ${size}`;
+      if (it.speed > 0 && it.bytes < it.size) text += ` · ${fmtSize(it.speed)}/s · ${fmtTime((it.size - it.bytes) / it.speed)} left`;
+      return text;
+    }
+    case "paused": return `${size} · Reconnecting…`;
+    case "done": return `${size} · ${it.dir === "send" ? "Sent" : "Received"}`;
+    case "declined": return `${size} · Declined${it.note ? ` · ${it.note}` : ""}`;
+    case "cancelled": return `${size} · Cancelled${it.note ? ` · ${it.note}` : ""}`;
+    case "failed": return `${size} · ${it.note || "Failed"}`;
+  }
+}
+
+function button(label: string, cls: string, onClick: () => void, name: string) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = `btn btn-sm ${cls} ${name}`;
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function makeRow(it: Item): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "item";
+  li.dataset.id = it.id;
+  li.dataset.dir = it.dir;
+  // static markup only: the file name is added below as text
+  li.innerHTML = `<svg class="item-icon" aria-hidden="true"><use href="#i-${it.dir === "send" ? "upload" : "download"}"/></svg>
+    <div class="item-main"><p class="item-name"></p><p class="item-detail"></p><progress max="1" value="0" hidden></progress></div>
+    <div class="item-actions"></div>`;
+  li.querySelector(".item-name")!.textContent = it.name; // untrusted: textContent only
+  li.querySelector("progress")!.setAttribute("aria-label", `Progress of ${it.name}`);
+  li.querySelector(".item-actions")!.append(
+    button("Accept", "btn-primary", () => void transfers.accept(it.id), "accept"),
+    button("Decline", "btn-outline", () => transfers.decline(it.id), "decline"),
+    button("Cancel", "btn-outline", () => transfers.cancel(it.id), "cancel"),
   );
-};
-
-function startSending(file: File, from: number) {
-  const chunk = Math.min(CHUNK, peer!.maxMessageSize() ?? CHUNK);
-  sender = createSender(file, peer!.channel(), chunk, (n) => showProgress(n, file.size), from);
-  sender.run().catch(fail);
+  return li;
 }
 
-// The transfer card: file name, progress, Cancel. The name is untrusted, so textContent only.
-function showTransfer(name: string) {
-  transferNameEl.textContent = name;
-  transferDiv.hidden = false;
+function render() {
+  const items = transfers.items();
+  for (const it of items) {
+    let li = rows.get(it.id);
+    if (!li) {
+      li = makeRow(it);
+      rows.set(it.id, li);
+      activityEl.append(li);
+    }
+    li.dataset.state = it.state;
+    li.querySelector(".item-detail")!.textContent = describe(it);
+    const bar = li.querySelector("progress")!;
+    bar.hidden = !(it.state === "active" || it.state === "paused");
+    bar.max = it.size || 1;
+    bar.value = it.bytes;
+    const offeredToMe = it.dir === "receive" && it.state === "offered";
+    li.querySelector<HTMLElement>(".accept")!.hidden = !offeredToMe;
+    li.querySelector<HTMLElement>(".decline")!.hidden = !offeredToMe;
+    li.querySelector<HTMLElement>(".cancel")!.hidden = !(["waiting", "active", "paused"].includes(it.state) || (it.dir === "send" && it.state === "offered"));
+  }
+  const ids = new Set(items.map((i) => i.id));
+  for (const [id, li] of rows) {
+    if (!ids.has(id)) {
+      li.remove();
+      rows.delete(id);
+    }
+  }
+
+  const waiting = items.filter((i) => i.dir === "receive" && i.state === "offered").length;
+  bulkEl.hidden = waiting < 2;
+  $("#bulk-text").textContent = `${waiting} files are waiting for you`;
+  clearBtn.hidden = !items.some((i) => ["done", "declined", "cancelled", "failed"].includes(i.state));
+  noteEl.hidden = !items.some((i) => i.state === "active" || i.state === "paused"); // only while files are moving
+  keepAwake(transfers.activeCount() > 0);
 }
 
-function startTransfer() {
-  state = "active";
-  offerDiv.hidden = true;
-  progressEl.classList.remove("is-frozen");
-  showTransfer(transferMeta?.name ?? "");
-  // Keeps the screen on so the tab isn't suspended; a refusal is fine.
-  navigator.wakeLock?.request("screen").then((l) => {
-    if (state === "active") lock = l;
-    else void l.release();
-  }, () => {});
-}
-
-function onControl(msg: any) {
-  switch (msg.t) {
-    case "meta": {
-      const meta = state === "idle" ? parseMeta(msg) : null;
-      if (!meta) {
-        sendCtl({ t: "reject", reason: "invalid" });
-        showError("Peer sent an invalid file offer.");
-        return;
-      }
-      incoming = meta;
-      role = "receiver";
-      transferId = meta.id;
-      transferFp = meta.fp;
-      transferMeta = { name: meta.name, size: meta.size, type: meta.type };
-      state = "offered";
-      $("#offer-name").textContent = meta.name; // textContent only: the name is untrusted
-      $("#offer-size").textContent = fmtSize(meta.size);
-      offerDiv.hidden = false;
-      $("#accept").focus();
-      break;
-    }
-    case "accept": {
-      const file = pendingFile;
-      if (state !== "offered" || !file) return;
-      startTransfer();
-      showProgress(0, file.size);
-      setStatus("Sending");
-      saveRecord();
-      startSending(file, 0);
-      break;
-    }
-    case "resume": {
-      // Receiver: the sender came back. Only the transfer we kept can resume, and only with the same file.
-      const r = parseResume(msg);
-      if (state !== "paused" || role !== "receiver" || !sink || !transferMeta || !r || r.id !== transferId || r.fp !== transferFp) {
-        sendCtl({ t: "reject", reason: "unknown" });
-        return;
-      }
-      const m = transferMeta;
-      sendCtl({ t: "resume-at", bytes: resumeOffset });
-      receiver = createReceiver(m.size, sink, peer!.channel(), (n) => showProgress(n, m.size), fail, resumeOffset);
-      startTransfer();
-      showProgress(resumeOffset, m.size);
-      setStatus("Receiving");
-      break;
-    }
-    case "resume-at": {
-      // Sender: carry on from where the receiver says it has everything.
-      const bytes = parseResumeAt(msg, pendingFile?.size ?? -1);
-      if (state !== "paused" || role !== "sender" || !pendingFile || bytes === null) return;
-      startTransfer();
-      showProgress(bytes, pendingFile.size);
-      setStatus("Sending");
-      startSending(pendingFile, bytes);
-      break;
-    }
-    case "reject":
-      if (state === "paused" && role === "sender") {
-        endTransfer("The other person no longer has this transfer. Choose the file again to start over.");
-        return;
-      }
-      if (state !== "offered") return;
-      resetTransfer();
-      showError(msg.reason === "declined" || typeof msg.reason !== "string"
-        ? "Receiver declined the file."
-        : `Receiver can't take the file: ${msg.reason.slice(0, 200)}`);
-      setStatus("Connected");
-      break;
-    case "ack":
-      if (typeof msg.bytes === "number") sender?.ack(msg.bytes);
-      break;
-    case "done":
-      if (!receiver) return fail(new Error("Unexpected end of file"));
-      setStatus("Finalizing…");
-      receiver.done().then(() => {
-        resetTransfer();
-        setStatus("File received");
-      }, fail);
-      break;
-    case "saved":
-      if (state !== "active" || !sender) return;
-      resetTransfer();
-      setStatus("Complete");
-      break;
-    case "cancel":
-      if (state === "idle") return;
-      endTransfer("Peer cancelled the transfer.");
-      setStatus("Connected");
-      break;
+// Keeps the screen on while files move, so the tab isn't suspended; a refusal is fine.
+let lock: WakeLockSentinel | null = null;
+let lockPending = false;
+function keepAwake(on: boolean) {
+  if (on && !lock && !lockPending) {
+    lockPending = true;
+    navigator.wakeLock?.request("screen").then(
+      (l) => { lockPending = false; lock = l; if (!transfers.activeCount()) keepAwake(false); },
+      () => { lockPending = false; },
+    );
+  } else if (!on && lock) {
+    void lock.release();
+    lock = null;
   }
 }
 
-// The connection dropped mid-transfer. Keep what we have and reconnect through the same transfer id.
-function pause() {
-  if (state === "paused") return; // a drop can report several times; only the first acts
-  state = "paused";
-  channelOpen = false;
-  fileInput.disabled = true;
-  sender?.cancel();
-  sender = undefined;
-  const r = receiver;
-  receiver = undefined;
-  peer?.close(); // marks it dead, so its late events are ignored
-  peer = undefined;
-  void lock?.release();
-  lock = null;
-  progressEl.classList.add("is-frozen");
-  setStatus("Reconnecting…");
+// Closing the tab mid-transfer would interrupt the file.
+addEventListener("beforeunload", (e) => {
+  if (transfers.items().some((i) => i.state === "active" || i.state === "paused")) e.preventDefault();
+});
+
+// ---------------------------------------------------------------- sending files
+
+function offerFiles(files: File[]) {
+  if (!files.length || !conn.isOpen()) return;
   showError("");
-  void (async () => {
-    if (r) resumeOffset = await r.flush(); // writes already queued still land, so the offset is exact
-    scheduleRejoin(0);
-  })();
+  void transfers.offer(files);
 }
 
-function scheduleRejoin(delay: number) {
-  clearTimeout(retryTimer);
-  retryTimer = setTimeout(() => {
-    if (state === "paused" && transferId) connect({ type: "rejoin", token: transferId });
-  }, delay);
-}
+filesInput.addEventListener("change", () => {
+  offerFiles([...(filesInput.files ?? [])]);
+  filesInput.value = ""; // so the same file can be chosen again
+});
 
-// A crashed tab may never close its channel cleanly, so "disconnected" and "failed" count as lost too.
-function peerLost(failed = false) {
-  if (state === "active" && transferId) return pause();
-  if (state === "paused") {
-    // The new connection failed before it opened: start over after a moment.
-    peer?.close();
-    peer = undefined;
-    scheduleRejoin(2000);
-    return;
+sessionEl.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropzone.classList.add("is-over");
+});
+sessionEl.addEventListener("dragleave", (e) => {
+  if (e.target === sessionEl || e.target === dropzone) dropzone.classList.remove("is-over");
+});
+sessionEl.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("is-over");
+  const files: File[] = [];
+  let folders = 0;
+  for (const entry of [...(e.dataTransfer?.items ?? [])]) {
+    if (entry.kind !== "file") continue;
+    if (entry.webkitGetAsEntry?.()?.isDirectory) folders++;
+    else {
+      const f = entry.getAsFile();
+      if (f) files.push(f);
+    }
   }
-  setStatus("Peer disconnected");
-  if (state !== "idle") endTransfer("The other person disconnected. The transfer stopped.");
-  else if (failed && !channelOpen) showError("Couldn't connect the two devices.");
-}
+  if (folders) showError("Folders can't be sent. Zip the folder first, then send the zip.");
+  offerFiles(files);
+});
 
-const events = {
-  signal: (s: Signal) => ws?.send(JSON.stringify(s)),
-  state(text: string) {
-    if (text === "failed" || text === "disconnected") peerLost(text === "failed");
-    else if (state !== "paused") setStatus(text === "connected" ? "Connected" : "Connecting");
-  },
-  open() {
-    channelOpen = true;
-    clearTimeout(retryTimer);
-    if (state === "paused") {
-      setStatus("Resuming…");
-      // The sender speaks first; the receiver waits for it.
-      if (role === "sender") sendCtl({ t: "resume", id: transferId, fp: transferFp });
-      return;
-    }
-    fileInput.disabled = state !== "idle";
-    setStatus("Connected");
-  },
-  closed() {
-    channelOpen = false;
-    fileInput.disabled = true;
-    peerLost();
-  },
-  message(data: string | ArrayBuffer) {
-    try {
-      if (typeof data === "string") return onControl(JSON.parse(data));
-      if (state === "active" && receiver) return receiver.chunk(data);
-      // Idle: chunks still in flight after a cancel or failure. Only data before Accept is a protocol error.
-      if (state === "offered") fail(new Error("Unexpected data from peer"));
-    } catch (err) {
-      fail(err);
-    }
-  },
-  low: () => sender?.wake(),
-};
+// ---------------------------------------------------------------- buttons
 
-function connect(first: { type: string; token?: string }) {
+$("#create").addEventListener("click", () => {
   showError("");
-  if (ws) ws.onmessage = ws.onclose = ws.onerror = null; // drop the socket from a failed join or an old room
-  ws?.close();
-  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  ws.onopen = () => ws!.send(JSON.stringify(first));
-  ws.onmessage = async (e) => {
-    const msg = JSON.parse(e.data);
-    try {
-      switch (msg.type) {
-        case "created":
-          if (first.type === "rejoin") {
-            // Reconnecting: we are first back, so wait quietly. No invite link, the other side knows the id.
-            startSection.hidden = true;
-            roomSection.hidden = false;
-            renewDiv.hidden = true;
-            setStatus("Reconnecting…");
-            break;
-          }
-          startSection.hidden = true;
-          roomSection.hidden = shareP.hidden = senderDiv.hidden = false;
-          renewDiv.hidden = true;
-          tokenEl.textContent = msg.token;
-          linkEl.value = `${location.origin}/#${msg.token}`;
-          drawQr($<SVGSVGElement & HTMLElement>("#qr-code"), linkEl.value);
-          qrDiv.hidden = false;
-          copyBtn.focus();
-          setStatus("Waiting for peer");
-          break;
-        case "joined":
-          startSection.hidden = true;
-          roomSection.hidden = false;
-          peer = createPeer(false, msg.iceServers ?? [], events);
-          setStatus("Connecting");
-          break;
-        case "peer-joined":
-          shareP.hidden = qrDiv.hidden = true; // the link is used up
-          peer = createPeer(true, msg.iceServers ?? [], events);
-          setStatus("Connecting");
-          await peer.start();
-          break;
-        case "offer":
-        case "answer":
-        case "candidate":
-          await peer?.handle(msg);
-          break;
-        case "peer-left":
-          // The direct connection reports its own failure.
-          if (channelOpen) break;
-          if (state === "paused") {
-            // The other side dropped again before the connection opened: wait for it in a fresh room.
-            peer?.close();
-            peer = undefined;
-            scheduleRejoin(1000);
-            break;
-          }
-          peer?.close();
-          setStatus("Peer left. Reload to start again.");
-          break;
-        case "error":
-          if (state === "paused") {
-            // Room full, expired, server busy or restarting: all pass with a retry.
-            if (msg.code === "invalid-token") showError(errorText[msg.code]);
-            else scheduleRejoin(2000);
-            break;
-          }
-          if (msg.code === "expired" && !shareP.hidden && !peer) {
-            // Our own waiting room timed out: drop the dead link and offer a fresh one.
-            shareP.hidden = qrDiv.hidden = true;
-            renewDiv.hidden = false;
-            setStatus("Link expired");
-            showError("Link expired.");
-            break;
-          }
-          showError(errorText[msg.code] ?? `Server error: ${msg.code}`);
-          break;
-      }
-    } catch (err) {
-      showError(String(err));
-    }
-  };
-  ws.onerror = ws.onclose = () => {
-    // An open DataChannel doesn't need signaling, so leave it running.
-    if (channelOpen) setStatus("Connected (signaling is down)");
-    else if (state === "paused") scheduleRejoin(2000); // signaling lost while reconnecting
-    else if (!peer && renewDiv.hidden) showError("Cannot reach the server."); // an expired room closes its socket on purpose
-  };
-}
-
-$("#create").addEventListener("click", () => connect({ type: "create" }));
-$("#renew-btn").addEventListener("click", () => connect({ type: "create" }));
-copyBtn.addEventListener("click", () => {
-  navigator.clipboard.writeText(linkEl.value).then(
-    () => flashCopied(copyBtn),
-    () => linkEl.select(), // clipboard blocked: select it so Ctrl+C works
+  conn.create();
+});
+$("#renew-btn").addEventListener("click", () => {
+  showError("");
+  conn.create();
+});
+$("#cancel-pair").addEventListener("click", () => {
+  conn.leave();
+  view("home");
+  setStatus("");
+});
+$("#copy").addEventListener("click", () => {
+  const link = $<HTMLTextAreaElement>("#link");
+  navigator.clipboard.writeText(link.value).then(
+    () => flashCopied($("#copy")),
+    () => link.select(), // clipboard blocked: select it so Ctrl+C works
   );
 });
 $("#join-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  connect({ type: "join", token: tokenInput.value.trim() });
-});
-
-fileInput.addEventListener("change", async () => {
-  const file = fileInput.files?.[0];
-  if (!file || state !== "idle" || !channelOpen) return;
   showError("");
-  pendingFile = file;
-  state = "offered";
-  role = "sender";
-  transferId = newTransferId();
-  fileInput.disabled = true;
-  showTransfer(file.name);
-  showProgress(0, file.size);
-  setStatus("Waiting for receiver to accept");
-  const fp = await fingerprint(file);
-  if (state !== "offered" || pendingFile !== file) return; // cancelled while hashing
-  transferFp = fp;
-  transferMeta = { name: file.name, size: file.size, type: file.type };
-  sendCtl({ t: "meta", ...transferMeta, id: transferId, fp });
+  view("none");
+  setStatus("Connecting");
+  conn.join($<HTMLInputElement>("#token-input").value.trim());
 });
 
-$("#accept").addEventListener("click", async () => {
-  const m = incoming;
-  if (state !== "offered" || !m) return;
-  showError("");
-  let s: Sink;
-  try {
-    s = await chooseSink(m); // first await in the handler: the save picker needs the click
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") return; // picker cancelled: stay on the prompt
-    const reason = err instanceof Error ? err.message : String(err);
-    sendCtl({ t: "reject", reason });
-    resetTransfer();
-    showError(reason);
-    return;
-  }
-  if (state !== "offered" || incoming !== m) return void s.abort(); // peer cancelled while the picker was open
-  sink = s;
-  receiver = createReceiver(m.size, sink, peer!.channel(), (n) => showProgress(n, m.size), fail);
-  startTransfer();
-  showProgress(0, m.size);
-  setStatus("Receiving");
-  if (sink.resumable) saveRecord(); // only a sink that survives a tab close can resume after a reload
-  sendCtl({ t: "accept" });
-});
+$("#accept-all").addEventListener("click", () => void transfers.acceptAll());
+$("#decline-all").addEventListener("click", () => transfers.declineAll());
+clearBtn.addEventListener("click", () => transfers.clearFinished());
+leaveBtn.addEventListener("click", goHome);
+$("#restart").addEventListener("click", goHome);
+bulkEl.setAttribute("aria-live", "polite"); // new offers are announced
 
-$("#decline").addEventListener("click", () => {
-  if (state !== "offered") return;
-  sendCtl({ t: "reject", reason: "declined" });
-  resetTransfer();
-});
+// ---------------------------------------------------------------- after a reload: carry on with what was interrupted
 
-$("#cancel").addEventListener("click", () => {
-  if (state === "idle") return;
-  abortTransfer("Transfer cancelled.");
-  setStatus("Connected");
-});
+const unfinishedEl = $("#unfinished");
+const resumeBtn = $("#resume");
+const resumeFiles = $<HTMLInputElement>("#resume-files");
+let resumeSession: string | undefined;
+let pendingSends: Saved[] = [];
+let rejoined = false;
 
-void cleanOpfs();
-
-// After a reload: offer to carry on with a transfer that was interrupted.
 async function showUnfinished() {
-  const rec = loadRecord();
+  const rec = loadRecords();
   if (!rec) return;
-  $("#unfinished-name").textContent = rec.name; // textContent only
-  if (rec.role === "receiver") {
-    const done = await partsOffset(rec.id);
-    $("#unfinished-pct").textContent = rec.size ? `(${Math.floor((done / rec.size) * 100)}% saved)` : "";
-    resumeBtn.hidden = false;
-    $("#unfinished-sender").hidden = true;
-  } else {
-    $("#unfinished-pct").textContent = "";
-    resumeBtn.hidden = true;
-    $("#unfinished-sender").hidden = false;
+  resumeSession = rec.session;
+  pendingSends = rec.items.filter((i) => i.dir === "send");
+  const receives = rec.items.filter((i) => i.dir === "receive");
+  const list = $("#unfinished-list");
+  list.replaceChildren();
+  for (const it of rec.items) {
+    const li = document.createElement("li");
+    const name = document.createElement("strong");
+    name.textContent = it.name; // untrusted: textContent only
+    const note = document.createElement("span");
+    note.className = "pct";
+    note.textContent = it.dir === "receive" ? ` (${it.size ? Math.floor(((await partsOffset(it.id)) / it.size) * 100) : 100}% saved)` : " (choose the file again)";
+    li.append(name, note);
+    list.append(li);
   }
-  unfinishedSection.hidden = false;
+  resumeBtn.hidden = receives.length === 0;
+  $("#unfinished-send").hidden = pendingSends.length === 0;
+  unfinishedEl.hidden = false;
 }
 
-function resumeUi(rec: SavedTransfer, done: number) {
-  unfinishedSection.hidden = true;
-  showError("");
-  role = rec.role;
-  transferId = rec.id;
-  transferFp = rec.fp;
-  transferMeta = { name: rec.name, size: rec.size, type: rec.type };
-  state = "paused";
-  startSection.hidden = true;
-  roomSection.hidden = false;
-  showTransfer(rec.name);
-  progressEl.classList.add("is-frozen");
-  showProgress(done, rec.size);
-  setStatus("Reconnecting…");
-  connect({ type: "rejoin", token: rec.id });
+function startRejoin() {
+  if (rejoined || !resumeSession) return;
+  rejoined = true;
+  conn.rejoin(resumeSession); // shows the connected screen as "Reconnecting…"
 }
 
 resumeBtn.addEventListener("click", async () => {
-  const rec = loadRecord();
-  if (!rec || rec.role !== "receiver") return;
+  const rec = loadRecords();
+  if (!rec) return;
+  showError("");
   try {
-    const opened = await openParts(rec.id, rec.name, rec.type);
-    sink = opened.sink;
-    resumeOffset = opened.offset;
-    resumeUi(rec, opened.offset);
+    for (const it of rec.items.filter((i) => i.dir === "receive")) {
+      const opened = await openParts(it.id, it.name, it.type);
+      transfers.restore(it, { sink: opened.sink, offset: opened.offset });
+    }
   } catch {
-    clearRecord();
-    unfinishedSection.hidden = true;
-    showError("This browser can't continue that transfer. Ask the sender to send the file again.");
+    saveRecords([]);
+    unfinishedEl.hidden = true;
+    return showError("This browser can't continue that transfer. Ask the other device to send the file again.");
   }
+  resumeBtn.hidden = true;
+  if (!pendingSends.length) unfinishedEl.hidden = true;
+  startRejoin();
 });
 
-resumeFile.addEventListener("change", async () => {
-  const file = resumeFile.files?.[0];
-  const rec = loadRecord();
-  if (!file || !rec || rec.role !== "sender") return;
-  if (file.size !== rec.size || (await fingerprint(file)) !== rec.fp) {
-    resumeFile.value = "";
-    showError("This isn't the same file.");
-    return;
+resumeFiles.addEventListener("change", async () => {
+  const chosen = [...(resumeFiles.files ?? [])];
+  resumeFiles.value = "";
+  const unmatched: string[] = [];
+  for (const file of chosen) {
+    const fp = await fingerprint(file);
+    const hit = pendingSends.find((s) => s.size === file.size && s.fp === fp);
+    if (!hit) {
+      unmatched.push(file.name);
+      continue;
+    }
+    pendingSends = pendingSends.filter((s) => s !== hit);
+    transfers.restore(hit, { file });
   }
-  pendingFile = file;
-  resumeUi(rec, 0);
+  if (unmatched.length) showError(`Not the same file: ${unmatched.join(", ")}`);
+  else showError("");
+  if (chosen.length > unmatched.length) startRejoin();
+  if (!pendingSends.length) $("#unfinished-send").hidden = true;
+  if (!pendingSends.length && resumeBtn.hidden) unfinishedEl.hidden = true;
 });
 
 $("#discard").addEventListener("click", async () => {
-  const rec = loadRecord();
-  clearRecord();
-  unfinishedSection.hidden = true;
-  if (rec?.role === "receiver") await discardParts(rec.id);
+  const rec = loadRecords();
+  saveRecords([]);
+  unfinishedEl.hidden = true;
+  for (const it of rec?.items ?? []) if (it.dir === "receive") await discardParts(it.id);
 });
+
+// ---------------------------------------------------------------- start up
+
+void cleanOpfs();
 
 // Pasting a link into a tab that already has the site open only changes the "#" part, which doesn't
 // reload the page. The links are read at load, so reload to act on them.
@@ -610,13 +443,16 @@ addEventListener("hashchange", () => location.reload());
 // Links carry their secret after "#", which the server never sees. Take it out of the address bar.
 const stored = parseStoredLink(location.hash);
 const linkToken = location.hash.slice(1);
+view("home");
 if (stored) {
   history.replaceState(null, "", location.pathname + location.search);
   void openStoredLink(stored);
 } else if (linkToken) {
   history.replaceState(null, "", location.pathname + location.search);
-  tokenInput.value = linkToken;
-  connect({ type: "join", token: linkToken });
+  $<HTMLInputElement>("#token-input").value = linkToken;
+  view("none");
+  setStatus("Connecting");
+  conn.join(linkToken);
 } else {
   void showUnfinished();
   void initStored();

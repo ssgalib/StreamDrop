@@ -24,6 +24,7 @@ async function uploadAs(browser: Browser, name: string, data: Buffer, passcode =
   const page = await ctx.newPage();
   await page.goto(URL);
   await expect(page.locator("#stored")).toBeVisible();
+  await page.click("#stored summary"); // the panel starts collapsed
   await page.fill("#store-key", passcode);
   await page.setInputFiles("#store-file", { name, mimeType: "application/octet-stream", buffer: data });
   await page.click("#store-upload");

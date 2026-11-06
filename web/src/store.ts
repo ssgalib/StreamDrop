@@ -1,4 +1,4 @@
-import { parseMeta, type Meta, type Sink } from "./transfer.ts";
+import { parseFileInfo, type FileInfo, type Sink } from "./transfer.ts";
 
 // Stored mode: the file is encrypted here, in 8 MiB chunks, before it leaves the browser.
 // The key travels only in the link's #fragment, so the server holds ciphertext it cannot read.
@@ -49,9 +49,9 @@ export async function encryptMeta(key: CryptoKey, meta: { name: string; size: nu
   return b64(await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv(1, 0), additionalData: META_AAD }, key, plain));
 }
 
-export async function decryptMeta(key: CryptoKey, text: string): Promise<Meta> {
+export async function decryptMeta(key: CryptoKey, text: string): Promise<FileInfo> {
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv(1, 0), additionalData: META_AAD }, key, unb64(text));
-  const meta = parseMeta(JSON.parse(new TextDecoder().decode(plain))); // whoever uploaded it controls these fields
+  const meta = parseFileInfo(JSON.parse(new TextDecoder().decode(plain))); // whoever uploaded it controls these fields
   if (!meta) throw new Error("The file's details are invalid.");
   return meta;
 }
@@ -124,14 +124,14 @@ export function parseStoredLink(hash: string): { id: string; key: string } | nul
   return m ? { id: m[1], key: m[2] } : null;
 }
 
-export type Stored = { meta: Meta; chunks: number; expiresAt: string };
+export type Stored = { meta: FileInfo; chunks: number; expiresAt: string };
 
 export async function fetchStored(id: string, keyText: string): Promise<Stored & { key: CryptoKey }> {
   const resp = await request(`/store/${id}`, {});
   if (!resp.ok) throw new Error(failureText(resp.status));
   const info = await resp.json();
   const key = await importKey(keyText);
-  let meta: Meta;
+  let meta: FileInfo;
   try {
     meta = await decryptMeta(key, info.meta);
   } catch {
