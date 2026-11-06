@@ -6,7 +6,7 @@ StreamDrop will be a self-hosted app that sends files directly from one browser 
 
 File transfer, coturn, Caddy, Docker and deployment are **not** part of this milestone.
 
-**Checked on this machine (2026-11-06):** Go 1.27, Node 24, npm 12, Firefox. Chrome and Chromium are not installed. Latest packages: Vite 8, TypeScript 7, `github.com/coder/websocket` v1.8.15.
+**Checked on this machine (2026-11-06):** Go 1.27, Node 24, npm 12, Firefox. Chrome and Chromium were not installed at the time, so install Chrome before the manual checks. Latest packages: Vite 8, TypeScript 7, `github.com/coder/websocket` v1.8.15.
 
 ---
 
@@ -477,11 +477,11 @@ Automated, from the project root:
 (cd web && npm run build)
 ```
 
-Manual, in Firefox with two terminals running `cd server && go run .` and `cd web && npm run dev`:
+Manual, in Chrome with two terminals running `cd server && go run .` and `cd web && npm run dev`:
 
 - [ ] **Connect:** Tab 1 → Create Room. Copy the token. Tab 2 → paste it → Join Room. Both tabs show "Connected".
 - [ ] **Message:** type in Tab 1 and it appears in Tab 2. Try the reverse too.
-- [ ] **Message stays off the WebSocket:** in DevTools → Network → `ws` → Response, frames show setup messages only and never your text.
+- [ ] **Message stays off the WebSocket:** in DevTools → Network → `ws` → Messages, frames show setup messages only and never your text.
 - [ ] **Message stays off the server:** stop the Go server with Ctrl+C, then send another message. It still arrives, which proves the path is direct.
 - [ ] **Bad token:** a made-up token shows an error and the form still works.
 - [ ] **Third tab:** using the same token shows "room full".
@@ -514,7 +514,7 @@ Manual, in Firefox with two terminals running `cd server && go run .` and `cd we
 | WebSocket fails with 403 | `Origin` doesn't match `Host` | Confirm `changeOrigin` isn't set in the Vite proxy. |
 | WebSocket fails immediately | Go server isn't running | Start `go run .` in `server/`. |
 | `addIceCandidate` throws | Candidate added before the remote description | Confirm the `pending` queue in `peer.ts` is intact. |
-| Stuck on "Connecting", state goes to `failed` | Firefox hides local addresses behind mDNS names | In `about:config`, set `media.peerconnection.ice.obfuscate_host_addresses` to `false` for local testing. |
+| Stuck on "Connecting", state goes to `failed` | Chrome hides local addresses behind mDNS names | Open `chrome://flags/#enable-webrtc-hide-local-ips-with-mdns`, set it to Disabled and relaunch, for local testing. |
 | Offer contains no data channel | `createDataChannel` ran after `createOffer` | Keep the order used in `peer.ts`. |
 | `go test -race` complains about cgo | No C compiler available | Install `gcc`. |
 | Race detector reports a problem | A `Peer` or `Room` field was touched outside `h.mu` | Move that access into a `Hub` method. |

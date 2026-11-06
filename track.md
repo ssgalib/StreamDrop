@@ -9,8 +9,8 @@
 - [x] Step 7: `web/index.html`
 - [x] Step 8: `web/src/peer.ts`
 - [x] Step 9: `web/src/main.ts`
-- [~] Step 10: automated checks pass (`go vet`, `go test -race`, `npm run build`); manual Firefox checklist NOT done
+- [~] Step 10: automated checks pass (`go vet`, `go test -race`, `npm run build`); manual Chrome checklist NOT done
 
 ## Remaining
-- Run the manual Firefox checklist from plan.md Step 10 (two tabs, DataChannel, stop-server test, expiry, XSS).
+- Run the manual Chrome checklist from plan.md Step 10 (two tabs, DataChannel, stop-server test, expiry, XSS).
 - Quick server + Vite proxy smoke test was blocked, so the `/ws` proxy is unverified.
