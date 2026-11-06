@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -20,6 +23,46 @@ type Message struct {
 }
 
 var errBadMessage = errors.New("bad-message")
+
+const (
+	maxConnsPerIP = 10
+	maxMessages   = 256
+)
+
+// A variable so tests can shorten it.
+var firstMessageTimeout = 15 * time.Second
+
+type ipLimiter struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (l *ipLimiter) acquire(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.n[ip] >= maxConnsPerIP {
+		return false
+	}
+	l.n[ip]++
+	return true
+}
+
+func (l *ipLimiter) release(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.n[ip]--; l.n[ip] <= 0 {
+		delete(l.n, ip)
+	}
+}
+
+func clientIP(r *http.Request) string {
+	// Safe only because signaling is reachable solely through Caddy, which replaces this header.
+	if ip, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ","); ip != "" {
+		return strings.TrimSpace(ip)
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return host
+}
 
 func validateSignal(m Message, isCreator bool) error {
 	switch m.Type {
@@ -40,7 +83,16 @@ func validateSignal(m Message, isCreator bool) error {
 }
 
 func newHandler(h *Hub) http.HandlerFunc {
+	limiter := &ipLimiter{n: map[string]int{}}
+	firstTimeout := firstMessageTimeout // read once: tests change the variable between handlers
 	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
+		if !limiter.acquire(ip) {
+			http.Error(w, "too many connections", http.StatusTooManyRequests)
+			return
+		}
+		defer limiter.release(ip)
+
 		// Accept rejects other sites' pages, because Origin must match Host.
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -55,9 +107,19 @@ func newHandler(h *Hub) http.HandlerFunc {
 			}
 		}()
 
-		for {
-			_, data, err := conn.Read(r.Context()) // 32 KiB limit by default
+		for n := 1; ; n++ {
+			// A connection that never speaks is holding a slot for nothing.
+			ctx, cancel := r.Context(), context.CancelFunc(func() {})
+			if n == 1 {
+				ctx, cancel = context.WithTimeout(ctx, firstTimeout)
+			}
+			_, data, err := conn.Read(ctx) // 32 KiB limit by default
+			cancel()
 			if err != nil {
+				return
+			}
+			if n > maxMessages {
+				conn.Close(websocket.StatusPolicyViolation, "too many messages")
 				return
 			}
 			var m Message
@@ -120,4 +182,12 @@ func send(p *Peer, m Message) {
 
 func sendError(p *Peer, code string) {
 	send(p, Message{Type: "error", Code: code})
+}
+
+// sweepOnce tells creators whose waiting room timed out, then closes their sockets.
+func sweepOnce(h *Hub) {
+	for _, p := range h.Sweep() {
+		sendError(p, "expired")
+		go p.conn.Close(websocket.StatusNormalClosure, "expired") // the close handshake can take seconds
+	}
 }

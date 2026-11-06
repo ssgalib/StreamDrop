@@ -281,7 +281,7 @@ function connect(first: object) {
   ws.onerror = ws.onclose = () => {
     // An open DataChannel doesn't need signaling, so leave it running.
     if (channelOpen) setStatus("Connected (signaling is down)");
-    else if (!peer) showError("Cannot reach the server.");
+    else if (!peer && renewDiv.hidden) showError("Cannot reach the server."); // an expired room closes its socket on purpose
   };
 }
 

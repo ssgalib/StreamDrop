@@ -171,3 +171,86 @@ func TestEvilOriginRejected(t *testing.T) {
 		t.Fatal("dial with foreign Origin should fail")
 	}
 }
+
+func TestConnectionsPerIP(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub()))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dialFrom := func(ip string) error {
+		c, _, err := websocket.Dial(context.Background(), wsURL,
+			&websocket.DialOptions{HTTPHeader: http.Header{"X-Forwarded-For": {ip}}})
+		if err == nil {
+			t.Cleanup(func() { c.CloseNow() })
+		}
+		return err
+	}
+	for range maxConnsPerIP {
+		if err := dialFrom("203.0.113.1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dialFrom("203.0.113.1"); err == nil {
+		t.Fatal("11th connection from one IP should be refused")
+	}
+	if err := dialFrom("203.0.113.2"); err != nil {
+		t.Fatalf("a different IP should still connect: %v", err)
+	}
+}
+
+func TestSilentConnectionCloses(t *testing.T) {
+	old := firstMessageTimeout
+	firstMessageTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { firstMessageTimeout = old })
+	srv := httptest.NewServer(newHandler(NewHub()))
+	defer srv.Close()
+	a := dial(t, srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, _, err := a.c.Read(ctx); ctx.Err() != nil || err == nil {
+		t.Fatalf("server should have closed the silent connection: %v", err)
+	}
+}
+
+func TestMessageCap(t *testing.T) {
+	srv := httptest.NewServer(newHandler(NewHub()))
+	defer srv.Close()
+	a := dial(t, srv.URL)
+	for range maxMessages + 1 {
+		a.send(`{"type":"nope"}`)
+	}
+	replies := 0
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		_, _, err := a.c.Read(ctx)
+		if err != nil {
+			if websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+				t.Fatalf("got %v, want policy-violation close", err)
+			}
+			break
+		}
+		replies++
+	}
+	if replies != maxMessages {
+		t.Fatalf("got %d replies, want %d", replies, maxMessages)
+	}
+}
+
+func TestExpiredCreatorIsToldAndClosed(t *testing.T) {
+	h, clock := newTestHub()
+	srv := httptest.NewServer(newHandler(h))
+	defer srv.Close()
+	a := dial(t, srv.URL)
+	a.send(`{"type":"create"}`)
+	a.expect("created")
+	h.mu.Lock()
+	*clock = clock.Add(tokenTTL)
+	h.mu.Unlock()
+	sweepOnce(h)
+	a.expectError("expired")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := a.c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+		t.Fatalf("got %v, want normal closure", err)
+	}
+}

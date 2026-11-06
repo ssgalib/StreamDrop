@@ -77,3 +77,16 @@ Not verified:
 - "Couldn't connect the two devices" (needs a real ICE failure)
 - Wake lock actually held (headless); a person unfamiliar with the app using only the page; screen-reader behaviour; contrast measured by eye only
 - A joiner on a swept (deleted) link gets "isn't valid" rather than "expired"; both read as plain messages
+
+# Milestone 5: Production setup (repo side done, VPS not touched)
+- [x] 5.1 Server hardening: 10 connections per IP (429 beyond that, IP from `X-Forwarded-For`), first message within 15 s, 256 messages per connection (then policy-violation close), expired rooms get `expired` then the socket is closed (`sweepOnce`). Each limit has a Go test; `go test -race -count=3` passes.
+- [x] Client: closing an expired room's socket no longer overwrites "Link expired" with "Cannot reach the server".
+- [x] 5.3 Files written: `server/Dockerfile`, `web/Dockerfile`, `web/Caddyfile`, `compose.yaml`, `.dockerignore` files, `.env` in `.gitignore`.
+- [x] CSP from the Caddyfile checked in Chromium: a full transfer and download under that policy produced no violations and the stylesheet applied. (Tested with a Node proxy adding the header and `ws://` instead of `wss://`.)
+- [ ] 5.2 Prepare the VPS, [ ] 5.4 Deploy: NOT done, see below.
+- Untested: the Docker images (no Docker here), Caddy itself, `golang:1.27` image tag existing.
+
+## VPS findings (read-only `ssh vps`)
+- Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM, 11 GB free. User `galib` is in the `sudo` and `docker` groups, but sudo needs a password and Docker is not installed.
+- **nginx is active and already serves other sites on ports 80/443** (habits.kurohane.xyz, pomodoro, typing, voxel-arena). The plan's Caddy container publishes 80/443 and would fail to start or collide with them.
+- No domain was given for StreamDrop (the plan uses `drop.example.com`).

@@ -14,9 +14,7 @@ func main() {
 	h := NewHub()
 	go func() {
 		for range time.Tick(30 * time.Second) {
-			for _, p := range h.Sweep() {
-				sendError(p, "expired")
-			}
+			sweepOnce(h)
 		}
 	}()
 
