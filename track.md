@@ -81,12 +81,17 @@ Not verified:
 # Milestone 5: Production setup (repo side done, VPS not touched)
 - [x] 5.1 Server hardening: 10 connections per IP (429 beyond that, IP from `X-Forwarded-For`), first message within 15 s, 256 messages per connection (then policy-violation close), expired rooms get `expired` then the socket is closed (`sweepOnce`). Each limit has a Go test; `go test -race -count=3` passes.
 - [x] Client: closing an expired room's socket no longer overwrites "Link expired" with "Cannot reach the server".
-- [x] 5.3 Files written: `server/Dockerfile`, `web/Dockerfile`, `web/Caddyfile`, `compose.yaml`, `.dockerignore` files, `.env` in `.gitignore`.
-- [x] CSP from the Caddyfile checked in Chromium: a full transfer and download under that policy produced no violations and the stylesheet applied. (Tested with a Node proxy adding the header and `ws://` instead of `wss://`.)
+- [x] Docker/Caddy files written, then deleted: the VPS has no Docker and nginx already owns 80/443. Deploy is now a static Go binary + systemd + nginx (`deploy/`).
+- [x] CSP (now set in `deploy/nginx-streamdrop.conf`) checked in Chromium: a full transfer and download under that policy produced no violations and the stylesheet applied. (Tested with a Node proxy adding the header and `ws://` instead of `wss://`.)
 - [ ] 5.2 Prepare the VPS, [ ] 5.4 Deploy: NOT done, see below.
-- Untested: the Docker images (no Docker here), Caddy itself, `golang:1.27` image tag existing.
+- Untested: `deploy/*` has not been run (needs sudo on the VPS); nginx config not syntax-checked (no nginx here).
 
 ## VPS findings (read-only `ssh vps`)
 - Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM, 11 GB free. User `galib` is in the `sudo` and `docker` groups, but sudo needs a password and Docker is not installed.
 - **nginx is active and already serves other sites on ports 80/443** (habits.kurohane.xyz, pomodoro, typing, voxel-arena). The plan's Caddy container publishes 80/443 and would fail to start or collide with them.
-- No domain was given for StreamDrop (the plan uses `drop.example.com`).
+- Domain: `streamdrop.kurohane.xyz`. Existing sites are reached through a **Cloudflare Tunnel** (cloudflared -> nginx on 127.0.0.1:80), so HTTPS is Cloudflare's and no certbot is needed. Real client IP arrives in `CF-Connecting-IP`; the nginx block copies it into `X-Forwarded-For` for the per-IP limit.
+- Go server runs on 127.0.0.1:4310 (8080 is named in the tunnel config for dev.kurohane.xyz).
+
+## Deploy (run by the user; needs sudo password)
+1. One-time: add the `streamdrop.kurohane.xyz` ingress rule to `/etc/cloudflared/config.yml` (snippet is in the header of `deploy/deploy.sh`), restart cloudflared, run `cloudflared tunnel route dns`.
+2. `deploy/deploy.sh` (builds, rsyncs to the VPS, runs `install.sh` under sudo).

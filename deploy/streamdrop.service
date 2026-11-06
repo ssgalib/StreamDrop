@@ -1,0 +1,19 @@
+[Unit]
+Description=StreamDrop signaling server
+After=network.target
+
+[Service]
+ExecStart=/opt/streamdrop/streamdrop -addr 127.0.0.1:4310
+DynamicUser=yes
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
